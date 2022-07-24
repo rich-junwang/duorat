@@ -396,6 +396,8 @@ class SLMLBuilder(object):
                                 )
                             )
                         elif isinstance(match_tag, ColumnMatchTag):
+                            if not match_tag.table_id:
+                                continue
                             table_name = escape(
                                 self.sql_schema.original_table_names[match_tag.table_id]
                             )

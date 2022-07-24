@@ -39,7 +39,7 @@ def process_spider(spider_path, duorat_path) -> None:
                 json.dump(payload_group, write_fp, indent=2)
 
 
-def process_squall(spider_path, duorat_path, dataset) -> None:
+def process_squall(spider_path, duorat_path) -> None:
     tables_json_path = "tables.json"
     examples_paths = ["train.jsonl", "dev.jsonl"]
 

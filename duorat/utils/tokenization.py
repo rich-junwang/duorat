@@ -1,6 +1,7 @@
 import abc
 from functools import lru_cache
 from typing import List, Sequence, Tuple
+import unicodedata
 
 import stanza
 from transformers import BertTokenizerFast
@@ -62,6 +63,18 @@ class StanzaTokenizer(AbstractTokenizer):
         return " ".join(xs)
 
 
+def _run_strip_accents(text):
+    """Strips accents from a piece of text."""
+    text = unicodedata.normalize("NFD", text)
+    output = []
+    for char in text:
+        cat = unicodedata.category(char)
+        if cat == "Mn":
+            continue
+        output.append(char)
+    return "".join(output)
+
+
 @registry.register("tokenizer", "BERTTokenizer")
 class BERTTokenizer(AbstractTokenizer):
     def __init__(self, pretrained_model_name_or_path: str):
@@ -83,11 +96,16 @@ class BERTTokenizer(AbstractTokenizer):
         ]
         raw_token_strings_with_sharps = []
         for token, raw_token in zip(tokens, raw_token_strings):
-            assert (
+            raw_token = _run_strip_accents(raw_token)
+            if not (
                 token == raw_token.lower()
                 or token[2:] == raw_token.lower()
                 or token[-2:] == raw_token.lower()
-            )
+            ):
+                print("s", s)
+                print("token", token)
+                print("raw_token", raw_token)
+                continue
             if token.startswith("##"):
                 raw_token_strings_with_sharps.append("##" + raw_token)
             elif token.endswith("##"):
