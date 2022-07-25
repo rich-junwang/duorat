@@ -90,4 +90,10 @@
         "num_eval_items": 1034,
         "report_every_n": 10
     }
+    "dist": {
+        "hosts": ["host0"],
+        "num_gpus": 8
+        "current_host": "host0",
+        "dist_backend": "NCCL"
+    }
 }

@@ -59,6 +59,7 @@ from duorat.utils import saver as saver_mod
 from duorat.utils.evaluation import evaluate_default, load_from_lines
 from third_party.spider.evaluation import LEVELS
 from scripts.preprocess import Preprocessor
+import torch.distributed as dist
 
 
 class Logger:
@@ -86,11 +87,6 @@ class Logger:
 
 class Trainer:
     def __init__(self, logger, config):
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        else:
-            device = torch.device("cpu")
-
         self.logger = logger
         self.config = config
 
@@ -104,6 +100,14 @@ class Trainer:
         self.init_random = random_state.RandomContext(
             self.config["train"].get("init_seed", None)
         )
+
+        self.local_rank = self.config["dist"]["local_rank"]
+        self.dist_backend = self.config["dist"]["dist_backend"]
+        if torch.cuda.is_available():
+            device = torch.device("cuda:{}".format(self.local_rank))
+        else:
+            device = torch.device("cpu")
+
         with self.init_random:
             # 0. Construct preprocessors
             self.model_preproc = registry.construct(
@@ -116,6 +120,15 @@ class Trainer:
                 "model", self.config["model"], preproc=self.model_preproc,
             )
             self.model.to(device=device)
+
+        # For now we hardcode the setting here. Will pulll these parameters from config file
+        self.distributed_training = False
+        num_gpus = self.config["dist"]["num_gpus"]
+        self.hosts = self.config["dist"]["hosts"]
+        self.world_size = num_gpus * len(self.hosts)
+        self.distributed_training = self.world_size > 1
+        self.host_rank = self.hosts.index(self.config["dist"]["current_host"])
+        self.rank = self.host_rank * num_gpus + self.local_rank
 
     def _log_loss(self, last_step, loss):
         self.logger.log("Step {}: loss={:.4f}".format(last_step, loss))
@@ -190,6 +203,25 @@ class Trainer:
             self.model, optimizer
         )
         last_step, best_val_all_exact = saver.restore(modeldir)
+
+        if self.distributed_training:
+            self.logger.info("dist.init_process_group")
+            if len(self.hosts) > 1:
+                dist.init_process_group(backend=self.dist_backend, world_size=self.world_size, rank=self.rank)  # for sagemaker
+            else:
+                dist_url = "tcp://127.0.0.1:8080"
+                dist.init_process_group(backend=self.dist_backend, init_method=dist_url, world_size=self.world_size,
+                                        rank=self.rank)
+            self.logger.info("Initialized the distributed environment: %s backed on %d nodes." % (
+                self.dist_backend, len(self.hosts)))
+            self.logger.info(
+                "World size: %d, Host rank %d, Rank %d, Local rank %d" % (self.world_size, self.host_rank,
+                                                                          self.rank, self.local_rank))
+
+        if self.distributed_training:
+            self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[self.local_rank],
+                                                                   find_unused_parameters=True)
+
         if last_step is 0 and self.config["train"].get("initialize_from", False):
             saver.restore(self.config["train"]["initialize_from"])
             self.logger.log(
@@ -249,14 +281,15 @@ class Trainer:
                 val_all_exact = self._eval_model(modeldir, last_step, val_data_loader, "val")
             return val_all_exact
 
-        val_all_exact = _evaluate_model()
-        saver.save(
-            modeldir,
-            last_step,
-            is_best=val_all_exact > best_val_all_exact,
-            best_validation_metric=max(val_all_exact, best_val_all_exact)
-        )
-        best_val_all_exact = max(val_all_exact, best_val_all_exact)
+        if self.rank == 0:
+            val_all_exact = _evaluate_model()
+            saver.save(
+                modeldir,
+                last_step,
+                is_best=val_all_exact > best_val_all_exact,
+                best_validation_metric=max(val_all_exact, best_val_all_exact)
+            )
+            best_val_all_exact = max(val_all_exact, best_val_all_exact)
 
         # Counter for grad aggregation
         grad_accumulation_counter = 0
@@ -320,17 +353,18 @@ class Trainer:
                         )
                         self._log_loss(last_step, cur_loss)
                         self._log_lr(last_step, cur_lrs)
-                    # Evaluate model
-                    if last_step % self.config["train"]["eval_every_n"] == 0:
-                        val_all_exact = _evaluate_model()
-                        # Run saver
-                        saver.save(
-                            modeldir,
-                            last_step,
-                            is_best=val_all_exact > best_val_all_exact,
-                            best_validation_metric=max(val_all_exact, best_val_all_exact)
-                        )
-                        best_val_all_exact = max(val_all_exact, best_val_all_exact)
+                    if self.rank == 0:
+                        # Evaluate model
+                        if last_step % self.config["train"]["eval_every_n"] == 0:
+                            val_all_exact = _evaluate_model()
+                            # Run saver
+                            saver.save(
+                                modeldir,
+                                last_step,
+                                is_best=val_all_exact > best_val_all_exact,
+                                best_validation_metric=max(val_all_exact, best_val_all_exact)
+                            )
+                            best_val_all_exact = max(val_all_exact, best_val_all_exact)
 
                     # Reset the list of losses
                     losses = []
@@ -344,7 +378,11 @@ class Trainer:
     def _eval_model(self, modeldir, last_step, eval_data_loader, eval_section):
         num_eval_items = self.config["train"]["num_eval_items"]
         stats = collections.defaultdict(float)
-        self.model.eval()
+        if isinstance(self.model, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel)):
+            model = self.model.module
+        else:
+            model = self.model
+        model.eval()
         with torch.no_grad():
             for eval_batch in eval_data_loader:
                 batch_res = self.model.eval_on_batch(eval_batch)
@@ -352,7 +390,7 @@ class Trainer:
                     stats[k] += v
                 if num_eval_items and stats["total"] > num_eval_items:
                     break
-        self.model.train()
+        model.train()
 
         # Divide each stat by 'total'
         for k in stats:
@@ -473,6 +511,8 @@ def main(
     args=None, logdir_suffix: List[str] = None, trainer_class: Type[Trainer] = Trainer
 ):
     parser = argparse.ArgumentParser()
+    parser.add_argument("--local_rank", type=int,
+                        help="Local rank. Necessary for using the torch.distributed.launch utility.")
     parser.add_argument("--logdir", required=True)
     parser.add_argument("--config", required=True)
     parser.add_argument("--config-args")
@@ -509,7 +549,7 @@ def main(
         preprocessor = Preprocessor(config)
         preprocessor.preprocess(sections, keep_vocab)
 
-
+    config["dist"]["local_rank"] = args.local_rank
     # Construct trainer and do training
     trainer = trainer_class(logger, config)
     trainer.train(modeldir=args.logdir)
