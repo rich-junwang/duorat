@@ -76,8 +76,8 @@
     },
     "train": {
         "amp_enabled": true,
-        "batch_size": 9,
-        "n_grad_accumulation_steps": 3,
+        "batch_size": 8,
+        "n_grad_accumulation_steps": 2,
         "eval_batch_size": 20,
         "eval_beam_size": 1,
         "eval_decode_max_time_step": 500,
@@ -89,10 +89,10 @@
         "max_steps": 100000,
         "num_eval_items": 1034,
         "report_every_n": 10
-    }
+    },
     "dist": {
         "hosts": ["host0"],
-        "num_gpus": 8
+        "num_gpus": 8,
         "current_host": "host0",
         "dist_backend": "NCCL"
     }

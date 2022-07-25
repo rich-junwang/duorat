@@ -205,16 +205,16 @@ class Trainer:
         last_step, best_val_all_exact = saver.restore(modeldir)
 
         if self.distributed_training:
-            self.logger.info("dist.init_process_group")
+            self.logger.log("dist.init_process_group")
             if len(self.hosts) > 1:
                 dist.init_process_group(backend=self.dist_backend, world_size=self.world_size, rank=self.rank)  # for sagemaker
             else:
                 dist_url = "tcp://127.0.0.1:8080"
                 dist.init_process_group(backend=self.dist_backend, init_method=dist_url, world_size=self.world_size,
                                         rank=self.rank)
-            self.logger.info("Initialized the distributed environment: %s backed on %d nodes." % (
+            self.logger.log("Initialized the distributed environment: %s backed on %d nodes." % (
                 self.dist_backend, len(self.hosts)))
-            self.logger.info(
+            self.logger.log(
                 "World size: %d, Host rank %d, Rank %d, Local rank %d" % (self.world_size, self.host_rank,
                                                                           self.rank, self.local_rank))
 
@@ -306,7 +306,7 @@ class Trainer:
                 # Compute and apply gradient
                 with self.model_random:
                     with autocast(enabled=self.config["train"]["amp_enabled"]):
-                        loss = self.model.compute_loss(batch)
+                        loss = self.model(batch)["loss"]
                         loss /= self.config["train"]["n_grad_accumulation_steps"]
 
                 scaler.scale(loss).backward()
@@ -385,9 +385,9 @@ class Trainer:
         model.eval()
         with torch.no_grad():
             for eval_batch in eval_data_loader:
-                batch_res = self.model.eval_on_batch(eval_batch)
+                batch_res = self.model(eval_batch)
                 for k, v in batch_res.items():
-                    stats[k] += v
+                    stats[k] += v.item()
                 if num_eval_items and stats["total"] > num_eval_items:
                     break
         model.train()
