@@ -36,7 +36,7 @@ import numpy as np
 
 # noinspection PyUnresolvedReferences
 from torch.cuda.amp import autocast, GradScaler
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader
 
 # noinspection PyUnresolvedReferences
 from duorat import datasets
@@ -60,6 +60,17 @@ from duorat.utils.evaluation import evaluate_default, load_from_lines
 from third_party.spider.evaluation import LEVELS
 from scripts.preprocess import Preprocessor
 import torch.distributed as dist
+
+
+class SimpleDataset(Dataset):
+    def __init__(self, data):
+        self.instances = data
+
+    def __len__(self):
+        return len(self.instances)
+
+    def __getitem__(self, index):
+        return self.instances[index]
 
 
 class Logger:
@@ -107,6 +118,7 @@ class Trainer:
             device = torch.device("cuda:{}".format(self.local_rank))
         else:
             device = torch.device("cpu")
+        self.device = device
 
         with self.init_random:
             # 0. Construct preprocessors
@@ -124,6 +136,7 @@ class Trainer:
         # For now we hardcode the setting here. Will pulll these parameters from config file
         self.distributed_training = False
         num_gpus = self.config["dist"]["num_gpus"]
+        self.num_gpus = num_gpus
         self.hosts = self.config["dist"]["hosts"]
         self.world_size = num_gpus * len(self.hosts)
         self.distributed_training = self.world_size > 1
@@ -241,19 +254,27 @@ class Trainer:
                 data_splits = [
                     section for section in self.config["data"] if "train" in section
                 ]
-            train_data = list(
+            train_data = SimpleDataset(
                 itertools.chain.from_iterable(
                     self.model_preproc.dataset(split) for split in data_splits
                 )
             )
+
+            if self.distributed_training:
+                train_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
+            else:
+                train_sampler = None
+
             self.logger.log(f"{len(train_data)} training examples")
 
             train_data_loader = self._yield_batches_from_epochs(
                 DataLoader(
                     train_data,
                     batch_size=self.config["train"]["batch_size"],
-                    shuffle=True,
+                    shuffle=(train_sampler is None),
+                    num_workers=4,
                     drop_last=True,
+                    sampler=train_sampler,
                     collate_fn=lambda x: x,
                 )
             )
@@ -387,7 +408,10 @@ class Trainer:
             for eval_batch in eval_data_loader:
                 batch_res = self.model(eval_batch)
                 for k, v in batch_res.items():
-                    stats[k] += v.item()
+                    if torch.is_tensor(v):
+                        stats[k] += v.item()
+                    else:
+                        stats[k] += v
                 if num_eval_items and stats["total"] > num_eval_items:
                     break
         model.train()
@@ -511,7 +535,7 @@ def main(
     args=None, logdir_suffix: List[str] = None, trainer_class: Type[Trainer] = Trainer
 ):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--local_rank", type=int,
+    parser.add_argument("--local_rank", type=int, default=os.environ.get("LOCAL_RANK", 0),
                         help="Local rank. Necessary for using the torch.distributed.launch utility.")
     parser.add_argument("--logdir", required=True)
     parser.add_argument("--config", required=True)
