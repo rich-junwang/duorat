@@ -489,7 +489,7 @@ class Trainer:
         self.model.eval()
         with torch.no_grad():
             for eval_batch in eval_data_loader:
-                batch_res = self.model.eval_on_batch(eval_batch)
+                batch_res = self.model(eval_batch)
                 for k, v in batch_res.items():
                     if torch.is_tensor(v):
                         stats[k] += v.item()
