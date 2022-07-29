@@ -22,7 +22,8 @@
                 use_attention_mask: false,
                 use_token_type_ids: false,
                 use_position_ids: false,
-                use_segments: false
+                use_segments: false,
+                use_outputs_from: 'enc'
             },
             "rat_attention_dropout": 0.1,
             "rat_dropout": 0.1,
@@ -54,7 +55,6 @@
             },
         },
         preproc+: {
-            save_path: 'data/duorat-bert-large',
             name: 'BertDuoRAT',
             add_cls_token: true,
             add_sep_token: false,
@@ -76,9 +76,9 @@
     },
     "train": {
         "amp_enabled": true,
-        "batch_size": 8,
-        "n_grad_accumulation_steps": 2,
-        "eval_batch_size": 16,
+        "batch_size": 4,  #9,
+        "n_grad_accumulation_steps": 7,  #3,
+        "eval_batch_size": 20,
         "eval_beam_size": 1,
         "eval_decode_max_time_step": 500,
         "eval_every_n": 5000,
@@ -89,11 +89,5 @@
         "max_steps": 100000,
         "num_eval_items": 1034,
         "report_every_n": 10
-    },
-    "dist": {
-        "hosts": ["host0"],
-        "num_gpus": 8,
-        "current_host": "host0",
-        "dist_backend": "NCCL"
     }
 }

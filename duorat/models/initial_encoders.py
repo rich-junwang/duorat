@@ -1,12 +1,12 @@
 import abc
 import math
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 import torch
 from torch import nn
 
-
-from transformers import BertModel
+from transformers import AutoModel, T5EncoderModel  # , BertModel
+from transformers.models.bart.modeling_bart import BartEncoder as BartEncoderModel
 
 from duorat.models.utils import _flip_attention_mask
 from duorat.models.rat import RATLayer
@@ -20,7 +20,8 @@ from duorat.types import DuoRATInputSegmentBatch
 from duorat.utils import registry
 
 
-# not yet in pytorch main tree, therefore temporarily taken from https://github.com/pytorch/examples/blob/632d385444ae16afe3e4003c94864f9f97dc8541/word_language_model/model.py
+# not yet in pytorch main tree, therefore temporarily taken from
+# https://github.com/pytorch/examples/blob/632d385444ae16afe3e4003c94864f9f97dc8541/word_language_model/model.py
 class PositionalEncoding(nn.Module):
     r"""Inject some information about the relative or absolute position of the tokens
         in the sequence. The positional encodings have the same dimension as
@@ -54,7 +55,7 @@ class PositionalEncoding(nn.Module):
         self.register_buffer("pe", pe)
 
     def forward(
-        self, x: torch.Tensor, position_ids: Optional[torch.Tensor] = None
+            self, x: torch.Tensor, position_ids: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         r"""Inputs of forward function
         Args:
@@ -97,21 +98,20 @@ class InitialEncoder(abc.ABC, nn.Module):
 
     @abc.abstractmethod
     def forward(
-        self,
-        input_a: torch.Tensor,
-        input_b: torch.Tensor,
-        input_attention_mask: torch.Tensor,
-        input_key_padding_mask: torch.Tensor,
-        input_token_type_ids: torch.Tensor,
-        input_position_ids: torch.Tensor,
-        input_source_gather_index: torch.Tensor,
-        input_segments: Tuple[DuoRATInputSegmentBatch, ...],
+            self,
+            input_a: torch.Tensor,
+            input_b: torch.Tensor,
+            input_attention_mask: torch.Tensor,
+            input_key_padding_mask: torch.Tensor,
+            input_token_type_ids: torch.Tensor,
+            input_position_ids: torch.Tensor,
+            input_source_gather_index: torch.Tensor,
+            input_segments: Tuple[DuoRATInputSegmentBatch, ...],
     ) -> torch.Tensor:
         pass
 
 
 class SingletonGloVeEmbedding(nn.Module):
-
     _embed = None
 
     def __init__(self):
@@ -145,15 +145,15 @@ class SingletonGloVeEmbedding(nn.Module):
 @registry.register("initial_encoder", "Transformer")
 class TransformerEncoder(InitialEncoder):
     def __init__(
-        self,
-        num_heads: int,
-        ffn_dim: int,
-        dropout: float,
-        num_layers: int,
-        use_attention_mask: bool,
-        use_position_ids: bool,
-        use_positional_embedding: bool,
-        preproc: TransformerDuoRATPreproc,
+            self,
+            num_heads: int,
+            ffn_dim: int,
+            dropout: float,
+            num_layers: int,
+            use_attention_mask: bool,
+            use_position_ids: bool,
+            use_positional_embedding: bool,
+            preproc: TransformerDuoRATPreproc,
     ) -> None:
         super(TransformerEncoder, self).__init__()
 
@@ -202,15 +202,15 @@ class TransformerEncoder(InitialEncoder):
         return None
 
     def forward(
-        self,
-        input_a: torch.Tensor,
-        input_b: torch.Tensor,
-        input_attention_mask: torch.Tensor,
-        input_key_padding_mask: torch.Tensor,
-        input_token_type_ids: torch.Tensor,
-        input_position_ids: torch.Tensor,
-        input_source_gather_index: torch.Tensor,
-        input_segments: Tuple[DuoRATInputSegmentBatch, ...],
+            self,
+            input_a: torch.Tensor,
+            input_b: torch.Tensor,
+            input_attention_mask: torch.Tensor,
+            input_key_padding_mask: torch.Tensor,
+            input_token_type_ids: torch.Tensor,
+            input_position_ids: torch.Tensor,
+            input_source_gather_index: torch.Tensor,
+            input_segments: Tuple[DuoRATInputSegmentBatch, ...],
     ) -> torch.Tensor:
         device = next(self.parameters()).device
 
@@ -281,8 +281,8 @@ class TransformerEncoder(InitialEncoder):
         assert _batch_size == batch_size
         _input_source_gather_index = (
             input_source_gather_index.to(device=device)
-            .unsqueeze(dim=2)
-            .expand(batch_size, max_src_length, self.embed_dim)
+                .unsqueeze(dim=2)
+                .expand(batch_size, max_src_length, self.embed_dim)
         )
         source = torch.gather(input, dim=1, index=_input_source_gather_index)
         assert source.shape == (batch_size, max_src_length, self.embed_dim)
@@ -294,27 +294,25 @@ class TransformerEncoder(InitialEncoder):
 @registry.register("initial_encoder", "Bert")
 class BertEncoder(InitialEncoder):
     def __init__(
-        self,
-        pretrained_model_name_or_path: str,
-        trainable: bool,
-        num_return_layers: int,
-        embed_dim: int,
-        use_dedicated_gpu: bool,
-        use_affine_transformation: bool,
-        use_attention_mask: bool,
-        use_token_type_ids: bool,
-        use_position_ids: bool,
-        use_segments: bool,
-        preproc: BertDuoRATPreproc,
+            self,
+            pretrained_model_name_or_path: str,
+            trainable: bool,
+            num_return_layers: int,
+            embed_dim: int,
+            use_dedicated_gpu: bool,
+            use_affine_transformation: bool,
+            use_attention_mask: bool,
+            use_token_type_ids: bool,
+            use_position_ids: bool,
+            use_segments: bool,
+            use_outputs_from: str,
+            preproc: BertDuoRATPreproc,
     ) -> None:
         super(BertEncoder, self).__init__()
 
         assert isinstance(preproc, BertDuoRATPreproc)
 
-        self.bert = BertModel.from_pretrained(
-            pretrained_model_name_or_path=pretrained_model_name_or_path,
-            output_hidden_states=True,
-        )
+        self.bert = self._load_pretrained(pretrained_model_name_or_path=pretrained_model_name_or_path)
         if not trainable:
             for param in self.bert.parameters():
                 param.requires_grad = False
@@ -338,26 +336,46 @@ class BertEncoder(InitialEncoder):
         self.use_token_type_ids = use_token_type_ids
         self.use_position_ids = use_position_ids
         self.use_segments = use_segments
+        self.use_outputs_from = use_outputs_from
+
+    @classmethod
+    def _load_pretrained(cls, pretrained_model_name_or_path: str) -> AutoModel:
+        return AutoModel.from_pretrained(
+            pretrained_model_name_or_path=pretrained_model_name_or_path
+        )
 
     @property
     def max_supported_input_length(self) -> Optional[int]:
         if self.use_position_ids or self.use_segments:
             return None
         else:
-            return self.bert.config.max_position_embeddings
+            # For most of BERT-alike models (except for longformer or similar), 512 is maximum sequence length.
+            return self.bert.config.max_position_embeddings if self.bert.config.max_position_embeddings <= 512 else 512
 
     @property
     def embed_dim(self) -> int:
         return self._embed_dim
 
+    def _get_pretrained_encoding_outputs(self, inputs: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
+        # @Vu Hoang: this is for HF transformers v4.6.0 as of June 2021
+        bert_result = self.bert(
+            input_ids=inputs['input_ids'],
+            attention_mask=inputs['input_attention_mask'],
+            token_type_ids=inputs['input_token_type_ids'],
+            position_ids=inputs['input_position_ids'],
+            output_hidden_states=True
+        )
+
+        return bert_result.last_hidden_state, bert_result.hidden_states
+
     def _forward_segment(
-        self,
-        input_a: torch.Tensor,
-        input_b: torch.Tensor,
-        input_attention_mask: torch.Tensor,
-        input_key_padding_mask: torch.Tensor,
-        input_token_type_ids: torch.Tensor,
-        input_position_ids: torch.Tensor,
+            self,
+            input_a: torch.Tensor,
+            input_b: torch.Tensor,
+            input_attention_mask: torch.Tensor,
+            input_key_padding_mask: torch.Tensor,
+            input_token_type_ids: torch.Tensor,
+            input_position_ids: torch.Tensor,
     ):
         device = next(self.parameters()).device
 
@@ -397,12 +415,12 @@ class BertEncoder(InitialEncoder):
         else:
             _input_position_ids = None
 
-        last_layer_hidden_state, _pooled_output, all_hidden_states = self.bert(
-            input_a.to(device=device),
-            attention_mask=_input_attention_mask,
-            token_type_ids=_input_token_type_ids,
-            position_ids=_input_position_ids,
-        )
+        inputs = {'input_ids': input_a.to(device=device),
+                  'input_attention_mask': _input_attention_mask,
+                  'input_token_type_ids': _input_token_type_ids,
+                  'input_position_ids': _input_position_ids
+                  }
+        last_layer_hidden_state, all_hidden_states = self._get_pretrained_encoding_outputs(inputs=inputs)
 
         assert len(all_hidden_states) == self.bert.config.num_hidden_layers + 1
         # assert all(
@@ -416,7 +434,7 @@ class BertEncoder(InitialEncoder):
         assert all(hidden_state.device == device for hidden_state in all_hidden_states)
         assert all_hidden_states[-1].data_ptr() == last_layer_hidden_state.data_ptr()
 
-        output = torch.cat(all_hidden_states[-self.num_return_layers :], 2)
+        output = torch.cat(all_hidden_states[-self.num_return_layers:], 2)
         assert output.shape == (batch_size, max_input_length, self._bert_embed_dim)
         assert output.device == device
 
@@ -428,15 +446,15 @@ class BertEncoder(InitialEncoder):
         return output
 
     def forward(
-        self,
-        input_a: torch.Tensor,
-        input_b: torch.Tensor,
-        input_attention_mask: torch.Tensor,
-        input_key_padding_mask: torch.Tensor,
-        input_token_type_ids: torch.Tensor,
-        input_position_ids: torch.Tensor,
-        input_source_gather_index: torch.Tensor,
-        input_segments: Tuple[DuoRATInputSegmentBatch, ...],
+            self,
+            input_a: torch.Tensor,
+            input_b: torch.Tensor,
+            input_attention_mask: torch.Tensor,
+            input_key_padding_mask: torch.Tensor,
+            input_token_type_ids: torch.Tensor,
+            input_position_ids: torch.Tensor,
+            input_source_gather_index: torch.Tensor,
+            input_segments: Tuple[DuoRATInputSegmentBatch, ...],
     ) -> torch.Tensor:
         device = next(self.parameters()).device
 
@@ -458,8 +476,8 @@ class BertEncoder(InitialEncoder):
                 assert _segment_size == segment_size
                 _input_source_gather_index = (
                     segment.input_source_gather_index.to(device=device)
-                    .unsqueeze(dim=2)
-                    .expand(segment_size, src_length, self.embed_dim)
+                        .unsqueeze(dim=2)
+                        .expand(segment_size, src_length, self.embed_dim)
                 )
                 source_tensor = torch.gather(
                     output, dim=1, index=_input_source_gather_index,
@@ -471,14 +489,14 @@ class BertEncoder(InitialEncoder):
                 )
                 _input_source_gather_index_mask = ~(
                     segment.input_source_gather_index_mask.to(device=device)
-                    .unsqueeze(dim=2)
-                    .expand(segment_size, src_length, self.embed_dim)
+                        .unsqueeze(dim=2)
+                        .expand(segment_size, src_length, self.embed_dim)
                 )
                 source_tensor = torch.masked_fill(
                     source_tensor, mask=_input_source_gather_index_mask, value=0,
                 )
                 del _input_source_gather_index_mask
-                source_tensor = torch.sum(source_tensor, dim=0, keepdim=False,)
+                source_tensor = torch.sum(source_tensor, dim=0, keepdim=False, )
                 assert source_tensor.shape == (src_length, self.embed_dim)
                 source_tensors.append(source_tensor)
             source = pad_nd_tensor(
@@ -509,8 +527,8 @@ class BertEncoder(InitialEncoder):
                 dim=1,
                 index=(
                     input_source_gather_index.to(device=device)
-                    .unsqueeze(dim=2)
-                    .expand(batch_size, max_src_length, self.embed_dim)
+                        .unsqueeze(dim=2)
+                        .expand(batch_size, max_src_length, self.embed_dim)
                 ),
             )
             assert source.shape == (batch_size, max_src_length, self.embed_dim)
@@ -520,3 +538,193 @@ class BertEncoder(InitialEncoder):
             return source.cuda(0)
         else:
             return source
+
+
+@registry.register("initial_encoder", "DistilBert")
+class DistilBertEncoder(BertEncoder):
+    def __init__(
+            self,
+            pretrained_model_name_or_path: str,
+            trainable: bool,
+            num_return_layers: int,
+            embed_dim: int,
+            use_dedicated_gpu: bool,
+            use_affine_transformation: bool,
+            use_attention_mask: bool,
+            use_token_type_ids: bool,
+            use_position_ids: bool,
+            use_segments: bool,
+            use_outputs_from: str,
+            preproc: BertDuoRATPreproc,
+    ) -> None:
+        super(DistilBertEncoder, self).__init__(pretrained_model_name_or_path=pretrained_model_name_or_path,
+                                                trainable=trainable,
+                                                num_return_layers=num_return_layers,
+                                                embed_dim=embed_dim,
+                                                use_dedicated_gpu=use_dedicated_gpu,
+                                                use_affine_transformation=use_affine_transformation,
+                                                use_attention_mask=use_attention_mask,
+                                                use_token_type_ids=use_token_type_ids,
+                                                use_position_ids=use_position_ids,
+                                                use_segments=use_segments,
+                                                use_outputs_from=use_outputs_from,
+                                                preproc=preproc)
+
+    def _get_pretrained_encoding_outputs(self, inputs: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
+        # @Vu Hoang: this is for HF transformers v4.6.0 as of June 2021
+        bert_result = self.bert(
+            input_ids=inputs['input_ids'],
+            attention_mask=inputs['input_attention_mask'],
+            output_hidden_states=True
+        )
+
+        return bert_result.last_hidden_state, bert_result.hidden_states
+
+
+@registry.register("initial_encoder", "T5Encoder")
+class T5Encoder(BertEncoder):
+    def __init__(
+            self,
+            pretrained_model_name_or_path: str,
+            trainable: bool,
+            num_return_layers: int,
+            embed_dim: int,
+            use_dedicated_gpu: bool,
+            use_affine_transformation: bool,
+            use_attention_mask: bool,
+            use_token_type_ids: bool,
+            use_position_ids: bool,
+            use_segments: bool,
+            use_outputs_from: str,
+            preproc: BertDuoRATPreproc,
+    ) -> None:
+        super(T5Encoder, self).__init__(pretrained_model_name_or_path=pretrained_model_name_or_path,
+                                        trainable=trainable,
+                                        num_return_layers=num_return_layers,
+                                        embed_dim=embed_dim,
+                                        use_dedicated_gpu=use_dedicated_gpu,
+                                        use_affine_transformation=use_affine_transformation,
+                                        use_attention_mask=use_attention_mask,
+                                        use_token_type_ids=use_token_type_ids,
+                                        use_position_ids=use_position_ids,
+                                        use_segments=use_segments,
+                                        use_outputs_from=use_outputs_from,
+                                        preproc=preproc)
+
+    @classmethod
+    def _load_pretrained(cls, pretrained_model_name_or_path: str) -> T5EncoderModel:
+        return T5EncoderModel.from_pretrained(
+            pretrained_model_name_or_path=pretrained_model_name_or_path
+        )
+
+    @property
+    def max_supported_input_length(self) -> Optional[int]:
+        return 512
+
+    def _get_pretrained_encoding_outputs(self, inputs: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
+        # @Vu Hoang: this is for HF transformers v4.6.0 as of June 2021
+        bert_result = self.bert(
+            input_ids=inputs['input_ids'],
+            attention_mask=inputs['input_attention_mask'],
+            output_hidden_states=True
+        )
+
+        return bert_result.last_hidden_state, bert_result.hidden_states
+
+    def _forward_segment(
+            self,
+            input_a: torch.Tensor,
+            input_b: torch.Tensor,
+            input_attention_mask: torch.Tensor,
+            input_key_padding_mask: torch.Tensor,
+            input_token_type_ids: torch.Tensor,
+            input_position_ids: torch.Tensor,
+    ):
+        device = next(self.parameters()).device
+
+        # assert input_a.dtype == torch.long
+        (batch_size, max_input_length) = input_a.shape
+
+        # assert input_b.dtype == torch.long
+        assert input_b.shape == (batch_size, max_input_length)
+        # TODO: assert that input_b does not contain anything but UNK or padding
+
+        if self.use_attention_mask:
+            # attend according to attention mask
+            # assert input_attention_mask.dtype == torch.bool
+            assert input_attention_mask.shape == (
+                batch_size,
+                max_input_length,
+                max_input_length,
+            )
+            _input_attention_mask = input_attention_mask.to(device=device)
+        else:
+            # use the key padding mask as attention mask
+            # assert input_key_padding_mask.dtype == torch.bool
+            assert input_key_padding_mask.shape == (batch_size, max_input_length)
+            _input_attention_mask = input_key_padding_mask.to(device=device)
+
+        inputs = {'input_ids': input_a.to(device=device),
+                  'input_attention_mask': _input_attention_mask
+                  }
+        last_layer_hidden_state, all_hidden_states = self._get_pretrained_encoding_outputs(inputs=inputs)
+
+        assert len(all_hidden_states) == self.bert.config.num_hidden_layers + 1
+        # assert all(
+        #     hidden_state.dtype == torch.float for hidden_state in all_hidden_states
+        # )
+        assert all(
+            hidden_state.shape
+            == (batch_size, max_input_length, self.bert.config.hidden_size)
+            for hidden_state in all_hidden_states
+        )
+        assert all(hidden_state.device == device for hidden_state in all_hidden_states)
+        assert all_hidden_states[-1].data_ptr() == last_layer_hidden_state.data_ptr()
+
+        output = torch.cat(all_hidden_states[-self.num_return_layers:], 2)
+        assert output.shape == (batch_size, max_input_length, self._bert_embed_dim)
+        assert output.device == device
+
+        if self.use_affine_transformation:
+            output = self.linear(output)
+        assert output.shape == (batch_size, max_input_length, self.embed_dim)
+        assert output.device == device
+
+        return output
+
+
+@registry.register("initial_encoder", "BartEncoder")
+class BartEncoder(T5Encoder):
+    def __init__(
+            self,
+            pretrained_model_name_or_path: str,
+            trainable: bool,
+            num_return_layers: int,
+            embed_dim: int,
+            use_dedicated_gpu: bool,
+            use_affine_transformation: bool,
+            use_attention_mask: bool,
+            use_token_type_ids: bool,
+            use_position_ids: bool,
+            use_segments: bool,
+            use_outputs_from: str,
+            preproc: BertDuoRATPreproc,
+    ) -> None:
+        super(BartEncoder, self).__init__(pretrained_model_name_or_path=pretrained_model_name_or_path,
+                                          trainable=trainable,
+                                          num_return_layers=num_return_layers,
+                                          embed_dim=embed_dim,
+                                          use_dedicated_gpu=use_dedicated_gpu,
+                                          use_affine_transformation=use_affine_transformation,
+                                          use_attention_mask=use_attention_mask,
+                                          use_token_type_ids=use_token_type_ids,
+                                          use_position_ids=use_position_ids,
+                                          use_segments=use_segments,
+                                          use_outputs_from=use_outputs_from,
+                                          preproc=preproc)
+
+    @classmethod
+    def _load_pretrained(cls, pretrained_model_name_or_path: str) -> BartEncoderModel:
+        return BartEncoderModel.from_pretrained(
+            pretrained_model_name_or_path=pretrained_model_name_or_path
+        )

@@ -67,7 +67,7 @@ To look at evaluation results:
 Simply run
 
 ```
-python scripts/interactive.py --logdir /logdir/duorat-bert --db-id [your_db]
+python scripts/interactive.py --logdir /logdir/<your_trained_duorat_model_folder> --db-path [your_db]
 ```
 
 `[your_db]` must be either an SQLite or CSV file. Type a question and the model will convert it into a query, which will then be executed on your database.

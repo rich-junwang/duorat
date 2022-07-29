@@ -44,7 +44,7 @@ from duorat.types import (
 
 
 def question_input_tokens(
-    question: Iterable[PreprocQuestionToken], scoping: Scoping
+        question: Iterable[PreprocQuestionToken], scoping: Scoping
 ) -> Generator[QuestionToken[str], None, None]:
     if isinstance(scoping, NoScoping):
         scope = AttentionScope(scope_name=AttentionScopeName.INPUT)
@@ -65,7 +65,7 @@ def question_input_tokens(
 
 
 def column_input_tokens(
-    sql_schema: SQLSchema, column_id: ColumnId, scoping: Scoping
+        sql_schema: SQLSchema, column_id: ColumnId, scoping: Scoping
 ) -> Generator[ColumnToken[str], None, None]:
     if isinstance(scoping, NoScoping):
         make_scope = lambda _column_id: AttentionScope(
@@ -88,7 +88,7 @@ def column_input_tokens(
 
 
 def table_input_tokens(
-    sql_schema: SQLSchema, table_id: TableId, scoping: Scoping
+        sql_schema: SQLSchema, table_id: TableId, scoping: Scoping
 ) -> Generator[TableToken[str], None, None]:
     if isinstance(scoping, NoScoping):
         make_scope = lambda _table_id: AttentionScope(
@@ -111,7 +111,7 @@ def table_input_tokens(
 
 
 def column_source_tokens(
-    sql_schema: SQLSchema, column_id: ColumnId, scoping: Scoping
+        sql_schema: SQLSchema, column_id: ColumnId, scoping: Scoping
 ) -> Tuple[ColumnToken[ColumnId]]:
     if isinstance(scoping, NoScoping):
         make_scope = lambda _column_id: AttentionScope(
@@ -131,7 +131,7 @@ def column_source_tokens(
 
 
 def table_source_tokens(
-    sql_schema: SQLSchema, table_id: TableId, scoping: Scoping
+        sql_schema: SQLSchema, table_id: TableId, scoping: Scoping
 ) -> Tuple[TableToken[TableId]]:
     if isinstance(scoping, NoScoping):
         make_scope = lambda _table_id: AttentionScope(
@@ -151,11 +151,11 @@ def table_source_tokens(
 
 
 def table_and_columns_tokens(
-    sql_schema: SQLSchema,
-    table_id: TableId,
-    scoping: Scoping,
-    get_column_tokens: Callable[[SQLSchema, ColumnId, Scoping], Iterable[ColumnToken]],
-    get_table_tokens: Callable[[SQLSchema, TableId, Scoping], Iterable[TableToken]],
+        sql_schema: SQLSchema,
+        table_id: TableId,
+        scoping: Scoping,
+        get_column_tokens: Callable[[SQLSchema, ColumnId, Scoping], Iterable[ColumnToken]],
+        get_table_tokens: Callable[[SQLSchema, TableId, Scoping], Iterable[TableToken]],
 ) -> Iterable[Token]:
     columns = itertools.chain(
         *(
@@ -166,8 +166,25 @@ def table_and_columns_tokens(
     return itertools.chain(get_table_tokens(sql_schema, table_id, scoping), columns)
 
 
+def columns_with_preceding_table_tokens(
+        sql_schema: SQLSchema,
+        table_id: TableId,
+        scoping: Scoping,
+        get_column_tokens: Callable[[SQLSchema, ColumnId, Scoping], Iterable[ColumnToken]],
+        get_table_tokens: Callable[[SQLSchema, TableId, Scoping], Iterable[TableToken]],
+) -> Iterable[Token]:
+    # FIXME: bug in the following?
+    table_tokens = get_table_tokens(sql_schema, table_id, scoping)
+    return itertools.chain(
+        *(
+            itertools.chain(table_tokens, get_column_tokens(sql_schema, column_id, scoping)) \
+            for column_id in sql_schema.table_to_columns[table_id]
+        )
+    )
+
+
 def schema_source_tokens(
-    sql_schema: SQLSchema, schema_token_ordering: str, scoping: Scoping
+        sql_schema: SQLSchema, schema_token_ordering: str, scoping: Scoping
 ) -> Iterable[Token]:
     return schema_tokens(
         sql_schema,
@@ -179,7 +196,7 @@ def schema_source_tokens(
 
 
 def schema_input_tokens(
-    sql_schema: SQLSchema, schema_token_ordering: str, scoping: Scoping
+        sql_schema: SQLSchema, schema_token_ordering: str, scoping: Scoping
 ) -> Iterable[Token]:
     return schema_tokens(
         sql_schema,
@@ -191,11 +208,11 @@ def schema_input_tokens(
 
 
 def schema_tokens(
-    sql_schema: SQLSchema,
-    schema_token_ordering: str,
-    scoping: Scoping,
-    get_column_tokens: Callable[[SQLSchema, ColumnId, Scoping], Iterable[ColumnToken]],
-    get_table_tokens: Callable[[SQLSchema, TableId, Scoping], Iterable[TableToken]],
+        sql_schema: SQLSchema,
+        schema_token_ordering: str,
+        scoping: Scoping,
+        get_column_tokens: Callable[[SQLSchema, ColumnId, Scoping], Iterable[ColumnToken]],
+        get_table_tokens: Callable[[SQLSchema, TableId, Scoping], Iterable[TableToken]],
 ) -> Iterable[Token]:
     if schema_token_ordering == "[table][column]":
         # First all the tables, then all the columns
@@ -248,6 +265,35 @@ def schema_tokens(
                 for table_id, table_name in sql_schema.tokenized_table_names.items()
             ),
         )
+    elif schema_token_ordering == "[table column]":
+        # Table Column Table Column Table Column
+        return itertools.chain(
+            *(
+                columns_with_preceding_table_tokens(
+                    sql_schema, table_id, scoping, get_column_tokens, get_table_tokens
+                )
+                for table_id in sql_schema.tokenized_table_names.keys()
+            ),
+        )
+    elif schema_token_ordering == "[column]":
+        # all the columns only, suitable for working with single-table databases (WikiSQL)
+        columns = itertools.chain(
+            *(
+                get_column_tokens(sql_schema, column_id, scoping)
+                for column_id in sql_schema.tokenized_column_names.keys()
+            )
+        )
+
+        # Columns that have no table (`*`, essentially)
+        columns_without_table = itertools.chain(
+            *(
+                get_column_tokens(sql_schema, column_id, scoping)
+                for column_id in sql_schema.tokenized_column_names.keys()
+                if sql_schema.column_to_table[column_id] is None
+            )
+        )
+
+        return itertools.chain(columns_without_table, columns)
     else:
         raise ValueError(
             f"Invalid value for schema_token_ordering: {schema_token_ordering}"
@@ -255,7 +301,7 @@ def schema_tokens(
 
 
 def question_source_tokens(
-    question: Iterable[PreprocQuestionToken], scoping: Scoping
+        question: Iterable[PreprocQuestionToken], scoping: Scoping
 ) -> Generator[QuestionToken[str], None, None]:
     if isinstance(scoping, NoScoping):
         scope = AttentionScope(scope_name=AttentionScopeName.SOURCE)
@@ -276,7 +322,7 @@ def question_source_tokens(
 
 
 def action_tokens(
-    actions: Iterable[Action], scoping: Scoping
+        actions: Iterable[Action], scoping: Scoping
 ) -> Generator[ActionToken[Action], None, None]:
     if isinstance(scoping, NoScoping):
         scope = AttentionScope(scope_name=AttentionScopeName.TARGET)
@@ -292,14 +338,14 @@ class TokenTensorBuilder(object):
     )
 
     def add_token(
-        self, token: Token[KT, int], copy: bool = False
+            self, token: Token[KT, int], copy: bool = False
     ) -> "TokenTensorBuilder":
         builder = deepcopy(self) if copy is True else self
         builder.sparse_1d_tensor_builder.append(index=token.position, value=token.value)
         return builder
 
     def add_tokens(
-        self, tokens: Iterable[Token[KT, int]], copy: bool = False
+            self, tokens: Iterable[Token[KT, int]], copy: bool = False
     ) -> "TokenTensorBuilder":
         builder = deepcopy(self) if copy is True else self
         for token in tokens:
@@ -319,7 +365,7 @@ class TokenTypeIdTensorBuilder(object):
     )
 
     def add_token(
-        self, token: Token[KT, VT], copy: bool = False
+            self, token: Token[KT, VT], copy: bool = False
     ) -> "TokenTypeIdTensorBuilder":
         builder = deepcopy(self) if copy is True else self
         if token.scope != builder.scope:
@@ -331,7 +377,7 @@ class TokenTypeIdTensorBuilder(object):
         return builder
 
     def add_tokens(
-        self, tokens: Iterable[Token[KT, VT]], copy: bool = False
+            self, tokens: Iterable[Token[KT, VT]], copy: bool = False
     ) -> "TokenTypeIdTensorBuilder":
         builder = deepcopy(self) if copy is True else self
         for token in tokens:
@@ -351,7 +397,7 @@ class PositionIdTensorBuilder(object):
     )
 
     def add_token(
-        self, token: Token[KT, VT], copy: bool = False
+            self, token: Token[KT, VT], copy: bool = False
     ) -> "PositionIdTensorBuilder":
         builder = deepcopy(self) if copy is True else self
         if token.scope != builder.scope:
@@ -365,7 +411,7 @@ class PositionIdTensorBuilder(object):
         return builder
 
     def add_tokens(
-        self, tokens: Iterable[Token[KT, VT]], copy: bool = False
+            self, tokens: Iterable[Token[KT, VT]], copy: bool = False
     ) -> "PositionIdTensorBuilder":
         builder = deepcopy(self) if copy is True else self
         for token in tokens:
@@ -388,14 +434,14 @@ Thus, if it were to be used in a transformer model, it would need to be inverted
     )
 
     def add_token(
-        self, token: Token[KT, VT], copy: bool = False
+            self, token: Token[KT, VT], copy: bool = False
     ) -> "KeyPaddingMaskBuilder":
         builder = deepcopy(self) if copy is True else self
         builder.sparse_1d_mask_tensor_builder.append(index=token.position)
         return builder
 
     def add_tokens(
-        self, tokens: Iterable[Token[KT, VT]], copy: bool = False
+            self, tokens: Iterable[Token[KT, VT]], copy: bool = False
     ) -> "KeyPaddingMaskBuilder":
         builder = deepcopy(self) if copy is True else self
         for token in tokens:
@@ -434,7 +480,7 @@ be mapped to `0` and `False` would need to be mapped to `float("-inf")`.
         return builder
 
     def _get_scopes_by_name(
-        self, scope_name: AttentionScopeName
+            self, scope_name: AttentionScopeName
     ) -> Set[AttentionScope]:
         return set(
             _scope
@@ -445,9 +491,9 @@ be mapped to `0` and `False` would need to be mapped to `float("-inf")`.
     def _scope_connections(self, scope: AttentionScope) -> Set[AttentionScope]:
         if isinstance(self.scoping, NoScoping):
             if scope.scope_name in (
-                AttentionScopeName.INPUT,
-                AttentionScopeName.SOURCE,
-                AttentionScopeName.TARGET,
+                    AttentionScopeName.INPUT,
+                    AttentionScopeName.SOURCE,
+                    AttentionScopeName.TARGET,
             ):
                 self_scopes = self._get_scopes_by_name(scope_name=scope.scope_name)
                 return self_scopes
@@ -543,8 +589,8 @@ be mapped to `0` and `False` would need to be mapped to `float("-inf")`.
     def _scope_attention_kind(self, scope: AttentionScope) -> AttentionKind:
         if isinstance(self.scoping, NoScoping):
             if scope.scope_name in (
-                AttentionScopeName.INPUT,
-                AttentionScopeName.SOURCE,
+                    AttentionScopeName.INPUT,
+                    AttentionScopeName.SOURCE,
             ):
                 return BidirectionalAttention()
             elif scope.scope_name == AttentionScopeName.TARGET:
@@ -555,8 +601,8 @@ be mapped to `0` and `False` would need to be mapped to `float("-inf")`.
                 )
         elif isinstance(self.scoping, CoarseScoping):
             if scope.scope_name in (
-                AttentionScopeName.QUESTION,
-                AttentionScopeName.SCHEMA,
+                    AttentionScopeName.QUESTION,
+                    AttentionScopeName.SCHEMA,
             ):
                 return BidirectionalAttention()
             elif scope.scope_name == AttentionScopeName.TARGET:
@@ -567,9 +613,9 @@ be mapped to `0` and `False` would need to be mapped to `float("-inf")`.
                 )
         elif isinstance(self.scoping, FineScoping):
             if scope.scope_name in (
-                AttentionScopeName.QUESTION,
-                AttentionScopeName.TABLE,
-                AttentionScopeName.COLUMN,
+                    AttentionScopeName.QUESTION,
+                    AttentionScopeName.TABLE,
+                    AttentionScopeName.COLUMN,
             ):
                 return BidirectionalAttention()
             elif scope.scope_name == AttentionScopeName.TARGET:
@@ -583,8 +629,8 @@ be mapped to `0` and `False` would need to be mapped to `float("-inf")`.
 
     @staticmethod
     def _constrain_attention(
-        attention_kind: AttentionKind,
-        attend_from_to: Generator[Tuple[Pos, Pos], None, None],
+            attention_kind: AttentionKind,
+            attend_from_to: Generator[Tuple[Pos, Pos], None, None],
     ) -> Generator[Tuple[Pos, Pos], None, None]:
         if attention_kind == BidirectionalAttention():
             return attend_from_to
@@ -605,10 +651,10 @@ be mapped to `0` and `False` would need to be mapped to `float("-inf")`.
 
     @classmethod
     def _make_mask(
-        cls,
-        attention_kind: AttentionKind,
-        attend_from: Iterable[Pos],
-        attend_to: Iterable[Pos],
+            cls,
+            attention_kind: AttentionKind,
+            attend_from: Iterable[Pos],
+            attend_to: Iterable[Pos],
     ) -> Generator[Tuple[Pos, Pos], None, None]:
         attend_from_to = (
             (from_pos, to_pos) for from_pos in attend_from for to_pos in attend_to
@@ -618,7 +664,7 @@ be mapped to `0` and `False` would need to be mapped to `float("-inf")`.
         )
 
     def add_token(
-        self, token: Token[KT, VT], copy: bool = False
+            self, token: Token[KT, VT], copy: bool = False
     ) -> "AttentionMaskBuilder":
         builder = deepcopy(self) if copy is True else self
         builder.scope_positions[token.scope].add(token.position)
@@ -633,8 +679,8 @@ be mapped to `0` and `False` would need to be mapped to `float("-inf")`.
                         *(
                             builder.scope_positions[that_scope]
                             for that_scope in builder._scope_connections(
-                                scope=this_scope
-                            )
+                            scope=this_scope
+                        )
                         )
                     ),
                 ),
@@ -660,7 +706,7 @@ be mapped to `0` and `False` would need to be mapped to `float("-inf")`.
         return builder
 
     def add_tokens(
-        self, tokens: Iterable[Token[KT, VT]], copy: bool = False
+            self, tokens: Iterable[Token[KT, VT]], copy: bool = False
     ) -> "AttentionMaskBuilder":
         builder = deepcopy(self) if copy is True else self
         for token in tokens:

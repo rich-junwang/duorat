@@ -21,18 +21,19 @@
 # SOFTWARE.
 
 
-import os
 import dataclasses
 import json
+import os
 from typing import Optional, Tuple, List, Iterable
+import traceback
 
-import attr
 import networkx as nx
 from pydantic.dataclasses import dataclass
 from pydantic.main import BaseConfig
 from torch.utils.data import Dataset
 
 from duorat.utils import registry
+from duorat.utils.db import execute
 from third_party.spider import evaluation
 from third_party.spider.preprocess.schema import get_schemas_from_json, Schema
 from third_party.spider.process_sql import get_sql
@@ -84,11 +85,12 @@ class SpiderItem:
     spider_schema: SpiderSchema
     db_path: str
     orig: dict
+    type: Optional[str] = 'original'
 
 
 def schema_dict_to_spider_schema(schema_dict):
     tables = tuple(
-        SpiderTable(id=i, name=name.split(), unsplit_name=name, orig_name=orig_name,)
+        SpiderTable(id=i, name=name.split(), unsplit_name=name, orig_name=orig_name, )
         for i, (name, orig_name) in enumerate(
             zip(schema_dict["table_names"], schema_dict["table_names_original"])
         )
@@ -104,9 +106,9 @@ def schema_dict_to_spider_schema(schema_dict):
         )
         for i, ((table_id, col_name), (_, orig_col_name), col_type,) in enumerate(
             zip(
-                schema_dict["column_names"],
+                schema_dict["extended_column_names"] if "extended_column_names" in schema_dict else schema_dict["column_names"] ,
                 schema_dict["column_names_original"],
-                schema_dict["column_types"],
+                schema_dict["inferred_column_types"] if "inferred_column_types" in schema_dict else schema_dict["column_types"],
             )
         )
     )
@@ -173,35 +175,56 @@ class SpiderDataset(Dataset):
         self.db_path = db_path
         self.examples = []
 
-        self.schemas, self.eval_foreign_key_maps = load_tables(tables_paths)
-        original_schemas = load_original_schemas(tables_paths)
+        self.schemas, _ = load_tables(tables_paths)
+        self.original_schemas = load_original_schemas(tables_paths)
 
+        count_incorrect = 0
         for path in paths:
-            raw_data = json.load(open(path))
-            for entry in raw_data:
-                if "sql" not in entry:
-                    entry["sql"] = get_sql(
-                        original_schemas[entry["db_id"]], entry["query"]
-                    )
-                item = SpiderItem(
-                    question=entry["question"],
-                    slml_question=entry.get("slml_question", None),
-                    query=entry["query"],
-                    spider_sql=entry["sql"],
-                    spider_schema=self.schemas[entry["db_id"]],
-                    db_path=self.get_db_path(entry["db_id"]),
-                    orig=entry,
-                )
-                self.examples.append(item)
+            if not os.path.exists(path):
+                print(f"Invalid data path: {path}")
+                continue
 
-    def get_db_path(self, db_id: str):
+            raw_data = json.load(open(path))
+            for ind, entry in enumerate(raw_data):
+                try:
+                    if "sql" not in entry or entry["sql"] is "":
+                        entry["sql"] = get_sql(
+                            self.original_schemas[entry["db_id"]], entry["query"]
+                        )
+                    entry["question"] = entry["question"].replace('*', '')
+                    item = SpiderItem(
+                        question=entry["question"],
+                        slml_question=entry.get("slml_question", None),
+                        query=entry["query"],
+                        spider_sql=entry["sql"],
+                        spider_schema=self.schemas[entry["db_id"]],
+                        db_path=self.get_db_path(entry["db_id"]),
+                        orig=entry,
+                    )
+                    self.examples.append(item)
+                except:  # then ignore it
+                    count_incorrect += 1
+                    print("Invalid entry: ", ind, entry)
+                    print('\n')
+
+        if count_incorrect > 0:
+            print(f"No. of incorrect entries in the given data: {count_incorrect}.")
+
+    def get_db_path(self, db_id: Optional[str] = ''):
         return os.path.join(self.db_path, db_id, db_id + ".sqlite")
+
+    def sample(self, sample_size: Optional[int] = None):
+        if sample_size:
+            self.examples = self.examples[:sample_size]
 
     def __len__(self) -> int:
         return len(self.examples)
 
     def __getitem__(self, idx) -> SpiderItem:
         return self.examples[idx]
+
+    def get_examples(self) -> List[SpiderItem]:
+        return self.examples
 
     class Metrics:
         def __init__(self, dataset):
@@ -215,26 +238,39 @@ class SpiderDataset(Dataset):
             )
             self.results = []
 
-        def add(self, item: SpiderItem, inferred_code: str) -> None:
-            self.results.append(
-                self.evaluator.evaluate_one(
+        def add(self, item: SpiderItem, inferred_code: str, do_execute: bool = False) -> None:
+            try:
+                eval_result = self.evaluator.evaluate_one(
                     db_name=item.spider_schema.db_id,
                     gold=item.query,
                     predicted=inferred_code,
                 )
-            )
+                eval_result["question"] = item.question
+                eval_result["db_name"] = item.spider_schema.db_id
+                eval_result["db_path"] = item.db_path
+                if do_execute:
+                    eval_result["execution_result"] = f"{execute(query=eval_result['predicted'], db_path=eval_result['db_path'])}"
+                self.results.append(eval_result)
+            except Exception:
+                print(f"Error when evaluating SQL query: \"{item.query}\" (db_id: {item.spider_schema.db_id}).")
+                print(f"Traceback error message: {traceback.format_exc()}")
 
         def evaluate_all(
-            self, idx: int, item: SpiderItem, inferred_codes: Iterable[str]
+                self, idx: int, item: SpiderItem, inferred_codes: Iterable[str], do_execute: bool = False
         ) -> Tuple[int, list]:
-            beams = [
-                self.evaluator.evaluate_one(
+            beams = []
+            for inferred_code in inferred_codes:
+                eval_result = self.evaluator.evaluate_one(
                     db_name=item.spider_schema.db_id,
                     gold=item.query,
                     predicted=inferred_code,
                 )
-                for inferred_code in inferred_codes
-            ]
+                eval_result["question"] = item.question
+                eval_result["db_name"] = item.spider_schema.db_id
+                eval_result["db_path"] = item.db_path
+                if do_execute:
+                  eval_result["execution_result"] = f"{execute(query=eval_result['predicted'], db_path=eval_result['db_path'])}"
+                beams.append(eval_result)
             return idx, beams
 
         def finalize(self) -> dict:

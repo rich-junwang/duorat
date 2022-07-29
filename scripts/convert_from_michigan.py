@@ -13,75 +13,83 @@
 # limitations under the License.
 
 import json
-import sys
 import argparse
+import re
 
 
 def get_nl_sql_pairs(filepath, splits, with_dbs=False):
-  """Gets pairs of natural language and corresponding gold SQL for Michigan.
+    """Gets pairs of natural language and corresponding gold SQL for Michigan.
 
-  TODO: This is Google code. Add LICENSE.
+    TODO: This is Google code. Add LICENSE.
 
-  From the XSP codebase.
-  """
-  with open(filepath) as infile:
-    data = json.load(infile)
+    From the XSP codebase.
+    """
 
-  pairs = list()
+    with open(filepath) as infile:
+        data = json.load(infile)
 
-  tag = '[' + filepath.split('/')[-1].split('.')[0] + ']'
-  print('Getting examples with tag ' + tag)
+    pairs = list()
 
-  # The UMichigan data is split by anonymized queries, where values are
-  # anonymized but table/column names are not. However, our experiments are
-  # performed on the original splits of the data.
-  for query in data:
-    # Take the first SQL query only. From their Github documentation:
-    # "Note - we only use the first query, but retain the variants for
-    #  completeness"
-    anonymized_sql = query['sql'][0]
+    tag = '[' + filepath.split('/')[-1].split('.')[0] + ']'
+    print('Getting examples with tag ' + tag)
 
-    # It's also associated with a number of natural language examples, which
-    # also contain anonymous tokens. Save the de-anonymized utterance and query.
-    for example in query['sentences']:
-      if example['question-split'] not in splits:
-        continue
+    # The UMichigan data is split by anonymized queries, where values are
+    # anonymized but table/column names are not. However, our experiments are
+    # performed on the original splits of the data.
+    for query in data:
+        # Take the first SQL query only. From their Github documentation:
+        # "Note - we only use the first query, but retain the variants for
+        #  completeness"
+        anonymized_sql = query['sql'][0]
 
-      nl = example['text']
-      sql = anonymized_sql
+        # It's also associated with a number of natural language examples, which
+        # also contain anonymous tokens. Save the de-anonymized utterance and query.
+        for example in query['sentences']:
+            if example['question-split'] not in splits:
+                continue
 
-      # Go through the anonymized values and replace them in both the natural
-      # language and the SQL.
-      #
-      # It's very important to sort these in descending order. If one is a
-      # substring of the other, it shouldn't be replaced first lest it ruin the
-      # replacement of the superstring.
-      for variable_name, value in sorted(
-          example['variables'].items(), key=lambda x: len(x[0]), reverse=True):
-        if not value:
-          # TODO(alanesuhr) While the Michigan repo says to use a - here, the
-          # thing that works is using a % and replacing = with LIKE.
-          #
-          # It's possible that I should remove such clauses from the SQL, as
-          # long as they lead to the same table result. They don't align well
-          # to the natural language at least.
-          #
-          # See: https://github.com/jkkummerfeld/text2sql-data/tree/master/data
-          value = '%'
+            nl = example['text']
+            sql = anonymized_sql
 
-        nl = nl.replace(variable_name, value)
-        sql = sql.replace(variable_name, value)
+            # Go through the anonymized values and replace them in both the natural
+            # language and the SQL.
+            #
+            # It's very important to sort these in descending order. If one is a
+            # substring of the other, it shouldn't be replaced first lest it ruin the
+            # replacement of the superstring.
+            for variable_name, value in sorted(
+                    example['variables'].items(), key=lambda x: len(x[0]), reverse=True):
+                if not value:
+                    # TODO(alanesuhr) While the Michigan repo says to use a - here, the
+                    # thing that works is using a % and replacing = with LIKE.
+                    #
+                    # It's possible that I should remove such clauses from the SQL, as
+                    # long as they lead to the same table result. They don't align well
+                    # to the natural language at least.
+                    #
+                    # See: https://github.com/jkkummerfeld/text2sql-data/tree/master/data
+                    value = '%'
 
-      # In the case that we replaced an empty anonymized value with %, make it
-      # compilable new allowing equality with any string.
-      sql = sql.replace('= "%"', 'LIKE "%"')
+                nl = nl.replace(variable_name, value)
+                sql = sql.replace(variable_name, value)
 
-      if with_dbs:
-        pairs.append((nl, sql, example['table-id']))
-      else:
-        pairs.append((nl, sql))
+            # In the case that we replaced an empty anonymized value with %, make it
+            # compilable new allowing equality with any string.
+            sql = sql.replace('= "%"', 'LIKE "%"')
 
-  return pairs
+            if with_dbs:
+                pairs.append((nl, sql, example['table-id']))
+            else:
+                pairs.append((nl, sql))
+
+    return pairs
+
+
+def remove_semicolon_in_sql_query(query):
+    query = str(query)
+    if query.strip().endswith(";"):
+        query = query[:-1].strip()
+    return query
 
 
 if __name__ == "__main__":
@@ -90,17 +98,33 @@ if __name__ == "__main__":
     parser.add_argument('--db-id', required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--split', action='append')
+    parser.add_argument('--do-postprocess-sql', action="store_true", default=False)
+    parser.add_argument(
+        "--with-dbs",
+        default=False,
+        action="store_true",
+        help="If True, consider table-id, e.g., in WikiSQL dataset.",
+    )
     args = parser.parse_args()
     print(args)
 
     items = []
-    for question, query in get_nl_sql_pairs(args.input, args.split):
+    for item in get_nl_sql_pairs(args.input, args.split,
+                                 with_dbs=args.with_dbs):
+        if args.with_dbs:
+            question, query, table_id = item
+            db_id = f"table_{table_id.replace('-', '_')}"
+            query = query.replace("FROM TABLE", f"FROM {db_id}")
+        else:
+            question, query = item
+            db_id = args.db_id
+
         items.append({
-            'db_id': args.db_id,
-            'query': query,
+            'db_id': db_id,
+            'query': remove_semicolon_in_sql_query(query),
             'sql': "",
             'question': question
         })
 
     with open(args.output, 'w') as output:
-        json.dump(items, output)
+        json.dump(items, output, indent=2, separators=(",", ": "))

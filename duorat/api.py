@@ -3,10 +3,7 @@
 # Copyright (c) 2020 Element AI Inc. All rights reserved.
 import json
 import os
-import sqlite3
-import re
-import subprocess
-from typing import Optional
+from typing import Optional, List, Union, Tuple
 
 import _jsonnet
 import torch
@@ -18,12 +15,16 @@ from duorat.datasets.spider import (
     SpiderSchema,
     schema_dict_to_spider_schema,
 )
+from duorat.datasets.sparc import (
+    SparcItem
+)
 from duorat.preproc.utils import preprocess_schema_uncached, refine_schema_names
 from duorat.types import RATPreprocItem, SQLSchema, Dict
-from third_party.spider.preprocess.get_tables import dump_db_json_schema
 from duorat.utils import registry
-import duorat.models
+import duorat.models  # *** COMPULSORY: for registering classes. PLEASE DON'T REMOVE THIS.
 from duorat.utils import saver as saver_mod
+from duorat.utils.db import fix_detokenization, convert_csv_to_sqlite, execute
+from third_party.spider.preprocess.get_tables import dump_db_json_schema
 
 
 class ModelLoader:
@@ -69,74 +70,82 @@ class DuoratAPI(object):
 
     def __init__(self, logdir: str, config_path: str):
         self.config = json.loads(_jsonnet.evaluate_file(config_path))
+        self.config['model']['preproc']['save_path'] = os.path.join(logdir, "data")
         self.inferer = ModelLoader(self.config)
         self.preproc = self.inferer.model_preproc
         self.model = self.inferer.load_model(logdir, step=None)
 
-    def infer_query(
-        self, question: str, spider_schema: SpiderSchema, preprocessed_schema: SQLSchema
-    ):
+    def infer_query(self,
+                    question: str,
+                    spider_schema: SpiderSchema,
+                    preprocessed_schema: SQLSchema,
+                    slml_question: Optional[str] = None,
+                    history: Optional[Union[List[str], List[Tuple[str, str, str]]]] = None,
+                    beam_size: Optional[int] = 1,
+                    decode_max_time_step: Optional[int] = 500
+                    ):
         # TODO: we should only need the preprocessed schema here
-        spider_item = SpiderItem(
-            question=question,
-            slml_question=None,
-            query="",
-            spider_sql={},
-            spider_schema=spider_schema,
-            db_path="",
-            orig={},
-        )
+        if history is not None:
+            interaction = [SpiderItem(question=prev_question[0] if isinstance(prev_question, tuple) else prev_question,
+                                      slml_question=prev_question[1] if isinstance(prev_question, tuple) else None,
+                                      query=prev_question[2] if isinstance(prev_question, tuple) else "",
+                                      spider_sql={},
+                                      spider_schema=spider_schema,
+                                      db_path="",
+                                      orig={}) for prev_question in history]
+            input_item = SparcItem(
+                question=question,
+                slml_question=slml_question,
+                query="",
+                spider_sql={},
+                spider_schema=spider_schema,
+                db_path="",
+                orig={},
+                interaction=interaction
+            )
+        else:
+            input_item = SpiderItem(
+                question=question,
+                slml_question=slml_question,
+                query="",
+                spider_sql={},
+                spider_schema=spider_schema,
+                db_path="",
+                orig={},
+            )
         preproc_item: RATPreprocItem = self.preproc.preprocess_item(
-            spider_item,
+            input_item,
             preprocessed_schema,
             AbstractSyntaxTree(production=None, fields=(), created_time=None),
         )
         finished_beams = self.model.parse(
-            [preproc_item], decode_max_time_step=500, beam_size=1
+            [preproc_item],
+            decode_max_time_step=decode_max_time_step,
+            beam_size=beam_size
         )
+
         if not finished_beams:
             return {
-                "slml_question": spider_item.slml_question,
+                "slml_question": input_item.slml_question,
                 "query": "",
+                "tokenized_query": "",
                 "score": -1,
+                "beams": [],
             }
+
         parsed_query = self.model.preproc.transition_system.ast_to_surface_code(
-            asdl_ast=finished_beams[0].ast
+            asdl_ast=finished_beams[0].ast  # best on beams
         )
         parsed_query = self.model.preproc.transition_system.spider_grammar.unparse(
             parsed_query, spider_schema=spider_schema
         )
         return {
-            "slml_question": spider_item.slml_question,
+            "slml_question": input_item.slml_question,
             "query": fix_detokenization(parsed_query),
+            "tokenized_query": parsed_query,
             "score": finished_beams[0].score,
+            "beams": finished_beams
         }
-
-
-def fix_detokenization(query: str):
-    query = query.replace('" ', '"').replace(' "', '"')
-    query = query.replace("% ", "%").replace(" %", "%")
-    query = re.sub("(\d) . (\d)", "\g<1>.\g<2>", query)
-    return query
-
-
-def add_collate_nocase(query: str):
-    value_regexps = ['"[^"]*"', "'[^']*'"]
-    value_strs = []
-    for regex in value_regexps:
-        value_strs += re.findall(regex, query)
-    for str_ in set(value_strs):
-        query = query.replace(str_, str_ + " COLLATE NOCASE ")
-    return query
-
-
-def convert_csv_to_sqlite(csv_path: str):
-    # TODO: infer types when importing
-    db_path = csv_path + ".sqlite"
-    if os.path.exists(db_path):
-        os.remove(db_path)
-    subprocess.run(["sqlite3", db_path, ".mode csv", f".import {csv_path} Data"])
-    return db_path
 
 
 class DuoratOnDatabase(object):
@@ -160,7 +169,13 @@ class DuoratOnDatabase(object):
                 raise ValueError()
             self.schema: Dict = next(iter(schemas.values()))
         else:
-            self.schema: Dict = dump_db_json_schema(self.db_path, "")
+            db_path_splits = self.db_path.split('/')
+            db_id = db_path_splits[-1].replace('.sqlite', '').replace('.db', '')
+            self.schema: Dict = dump_db_json_schema(self.db_path, db_id)
+            schema_json_file = os.path.join('/'.join(db_path_splits[:-1]), 'tables.json')
+            if not os.path.exists(schema_json_file):  # Vu Hoang: write to JSON schema file if not exists.
+                with open(schema_json_file, "w") as f_json:
+                    json.dump([self.schema], f_json, indent=4, sort_keys=True)
             self.schema: SpiderSchema = schema_dict_to_spider_schema(
                 refine_schema_names(self.schema)
             )
@@ -171,13 +186,14 @@ class DuoratOnDatabase(object):
             tokenize=self.duorat.preproc._schema_tokenize,
         )
 
-    def infer_query(self, question):
-        return self.duorat.infer_query(question, self.schema, self.preprocessed_schema)
+    def infer_query(self, question, slml_question=None, history=None, beam_size=1, decode_max_time_step=500):
+        return self.duorat.infer_query(question,
+                                       spider_schema=self.schema,
+                                       preprocessed_schema=self.preprocessed_schema,
+                                       slml_question=slml_question,
+                                       history=history,
+                                       beam_size=beam_size,
+                                       decode_max_time_step=decode_max_time_step)
 
     def execute(self, query):
-        conn = sqlite3.connect(self.db_path)
-        # Temporary Hack: makes sure all literals are collated in a case-insensitive way
-        query = add_collate_nocase(query)
-        results = conn.execute(query).fetchall()
-        conn.close()
-        return results
+        return execute(query=query, db_path=self.db_path)

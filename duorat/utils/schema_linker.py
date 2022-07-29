@@ -58,11 +58,14 @@ class SpiderSchemaLinker(AbstractSchemaLinker):
         blocking_match: bool = True,
         whole_entry_db_content_confidence: str = "high",
         partial_entry_db_content_confidence: str = "low",
+        do_filter_bad_matches: bool = False,
+        match_type: Optional[str] = 'table,column,value',
     ):
         super(SpiderSchemaLinker, self).__init__()
         self.max_n_gram = max_n_gram
         self.with_stemming = with_stemming
         self.blocking_match = blocking_match
+        self.do_filter_bad_matches = do_filter_bad_matches
         self.whole_entry_db_content_confidence = MATCH_CONFIDENCE[
             whole_entry_db_content_confidence
         ]
@@ -70,6 +73,7 @@ class SpiderSchemaLinker(AbstractSchemaLinker):
             partial_entry_db_content_confidence
         ]
         self.tokenizer: AbstractTokenizer = registry.construct("tokenizer", tokenizer)
+        self.match_type = match_type
 
     def question_to_slml(self, question: str, sql_schema: SQLSchema,) -> str:
         tagged_question_tokens = tag_question_with_schema_links(
@@ -81,9 +85,12 @@ class SpiderSchemaLinker(AbstractSchemaLinker):
             blocking_match=self.blocking_match,
             whole_entry_db_content_confidence=self.whole_entry_db_content_confidence,
             partial_entry_db_content_confidence=self.partial_entry_db_content_confidence,
+            match_type=self.match_type
         )
         slml_builder = SLMLBuilder(
-            sql_schema=sql_schema, detokenize=self.tokenizer.detokenize
+            sql_schema=sql_schema,
+            detokenize=self.tokenizer.detokenize,
+
         )
         slml_builder.add_question_tokens(question_tokens=tagged_question_tokens)
         slml_question = slml_builder.build()
@@ -99,6 +106,7 @@ def tag_question_with_schema_links(
     blocking_match: bool,
     whole_entry_db_content_confidence: Optional[MatchConfidence],
     partial_entry_db_content_confidence: Optional[MatchConfidence],
+    match_type: Optional[str] = "table,column,value",
 ) -> TaggedSequence:
     """
 
@@ -110,6 +118,7 @@ def tag_question_with_schema_links(
     :param blocking_match:
     :param whole_entry_db_content_confidence:
     :param partial_entry_db_content_confidence:
+    :param match_type:
     :return:
     """
 
@@ -125,6 +134,7 @@ def tag_question_with_schema_links(
         for token, raw_token in tokenized_question
     ]
 
+    # column matching
     for n in range(max_n_gram, 0, -1):
         for (start, end), question_n_gram in get_spans(
             tagged_sequence=tagged_question_tokens, n=n
@@ -177,35 +187,38 @@ def tag_question_with_schema_links(
                         )
                     for idx in range(start, end):
                         if match is VALUE_MATCH:
-                            # Only keep the match with the highest confidence
-                            entry_type, match_value = max(
-                                db_content_matches,
-                                key=lambda match: _entry_type_to_confidence(match[0])
-                            )
-                            match_tag = ValueMatchTag(
-                                confidence=_entry_type_to_confidence(entry_type),
-                                column_id=column_id,
-                                table_id=table_id,
-                                value=match_value,
-                            )
-                            tagged_question_tokens[idx].match_tags.append(match_tag)
+                            if 'value' in match_type:
+                                # Only keep the match with the highest confidence
+                                entry_type, match_value = max(
+                                    db_content_matches,
+                                    key=lambda match: _entry_type_to_confidence(match[0])
+                                )
+                                match_tag = ValueMatchTag(
+                                    confidence=_entry_type_to_confidence(entry_type),
+                                    column_id=column_id,
+                                    table_id=table_id,
+                                    value=match_value,
+                                )
+                                tagged_question_tokens[idx].match_tags.append(match_tag)
                         else:
-                            match_tag = ColumnMatchTag(
-                                confidence=(
-                                    HighConfidenceMatch()
-                                    if match == EXACT_MATCH
-                                    else LowConfidenceMatch()
-                                ),
-                                column_id=column_id,
-                                table_id=table_id,
-                            )
-                            tagged_question_tokens[idx].match_tags.append(match_tag)
+                            if 'column' in match_type:
+                                match_tag = ColumnMatchTag(
+                                    confidence=(
+                                        HighConfidenceMatch()
+                                        if match == EXACT_MATCH
+                                        else LowConfidenceMatch()
+                                    ),
+                                    column_id=column_id,
+                                    table_id=table_id,
+                                )
+                                tagged_question_tokens[idx].match_tags.append(match_tag)
 
     # reset BIO tags
     tagged_question_tokens: TaggedSequence = [
         replace(t, tag=OUTSIDE) for t in tagged_question_tokens
     ]
 
+    # table matching
     for n in range(max_n_gram, 0, -1):
         for (start, end), question_n_gram in get_spans(
             tagged_sequence=tagged_question_tokens, n=n
@@ -226,17 +239,19 @@ def tag_question_with_schema_links(
                         set_tags(
                             tagged_sequence=tagged_question_tokens, start=start, end=end
                         )
-                    for idx in range(start, end):
-                        tagged_question_tokens[idx].match_tags.append(
-                            TableMatchTag(
-                                confidence=(
-                                    HighConfidenceMatch()
-                                    if match == EXACT_MATCH
-                                    else LowConfidenceMatch()
-                                ),
-                                table_id=table_id,
+
+                    if 'table' in match_type:
+                        for idx in range(start, end):
+                            tagged_question_tokens[idx].match_tags.append(
+                                TableMatchTag(
+                                    confidence=(
+                                        HighConfidenceMatch()
+                                        if match == EXACT_MATCH
+                                        else LowConfidenceMatch()
+                                    ),
+                                    table_id=table_id,
+                                )
                             )
-                        )
 
     return tagged_question_tokens
 

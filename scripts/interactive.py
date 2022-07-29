@@ -2,14 +2,10 @@
 # Raymond Li, 2020-04-27
 # Copyright (c) 2020 Element AI Inc. All rights reserved.
 import argparse
-import glob
-import re
-
-import _jsonnet
 
 from duorat.api import DuoratAPI, DuoratOnDatabase
-from duorat.utils.evaluation import find_any_config
 from duorat.preproc.slml import pretty_format_slml
+from duorat.utils.evaluation import find_any_config
 
 
 class Interactive(object):
@@ -20,11 +16,11 @@ class Interactive(object):
     def ask_any_question(self, question):
         results = self.duorat.infer_query(question)
 
-        print(pretty_format_slml(results['slml_question']))
-        print(f'{results["query"]}  ({results["score"]})')
+        print(f"SLML output: {pretty_format_slml(results['slml_question'])}")
+        print(f"SQL: {results['query']}  (score: {results['score']})")
         try:
             results = self.duorat.execute(results['query'])
-            print(results)
+            print(f"Execution results: {results}")
         except Exception as e:
             print(str(e))
 
@@ -46,7 +42,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--logdir", required=True)
     parser.add_argument("--config",
-        help="The configuration file. By default, an arbitrary configuration from the logdir is loaded")
+                        help="The configuration file. By default, an arbitrary configuration from the logdir is loaded")
     parser.add_argument(
         "--db-path", required=True,
         help="The path to the sqlite database or csv file"

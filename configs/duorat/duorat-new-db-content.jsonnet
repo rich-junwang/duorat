@@ -8,7 +8,6 @@
             }
         },
         preproc+: {
-            save_path: 'data/duorat/duorat-bert-large-wh-pl',
             schema_linker+: {
                 whole_entry_db_content_confidence: 'high',
                 partial_entry_db_content_confidence: 'low'

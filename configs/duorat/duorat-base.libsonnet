@@ -18,6 +18,7 @@ function(output_from, data_path='data/', save_dir='duorat/') {
                 use_attention_mask: true,
                 use_position_ids: true,
                 use_positional_embedding: true,
+                use_outputs_from: '',
             },
             rat_num_heads: 2,
             rat_ffn_dim: 128,

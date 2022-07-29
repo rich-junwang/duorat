@@ -529,6 +529,8 @@ class RATPreprocItem(object):
     question: Tuple[PreprocQuestionToken, ...]
     sql_schema: SQLSchema
     actions: Tuple[Action, ...]
+    interaction: Optional[Tuple[Tuple[PreprocQuestionToken, ...], ...]] = None
+    type: Optional[str] = 'original'
 
 
 @dataclass

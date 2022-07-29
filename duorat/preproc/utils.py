@@ -322,7 +322,7 @@ def _process_name(name: str):
 
 def _prompt_table(table_name, prompt_user=False):
     table_name = _process_name(table_name)
-    print(f"Current table name: {table_name}")
+    # print(f"Current table name: {table_name}")
     new_name = (
         input("Type new name (empty to keep previous name): ") if prompt_user else ""
     )
@@ -331,7 +331,7 @@ def _prompt_table(table_name, prompt_user=False):
 
 def _prompt_column(column_name, table_name, prompt_user=False):
     column_name = _process_name(column_name)
-    print(f"Table {table_name}. Current col name: {column_name}")
+    # print(f"Table {table_name}. Current col name: {column_name}")
     new_name = (
         input("Type new name (empty to keep previous name): ") if prompt_user else ""
     )
@@ -355,6 +355,6 @@ def refine_schema_names(schema: Dict):
     for col in schema["column_names_original"]:
         t_id = col[0]
         column_name = col[1]
-        corrected = _prompt_column(column_name, new_schema["table_names"][t_id])
+        corrected = _prompt_column(column_name, new_schema["table_names"][t_id] if t_id >= 0 else "")
         new_schema["column_names"].append([t_id, corrected])
     return new_schema

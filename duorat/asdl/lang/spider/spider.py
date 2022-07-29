@@ -135,7 +135,9 @@ class SpiderGrammar:
                 "_type": "String",
                 "s": val,
             }
-        elif isinstance(val, list):
+        elif isinstance(val, list) or isinstance(val, tuple):
+            if isinstance(val, tuple):
+                val = list(val)
             return {
                 "_type": "ColUnit",
                 "c": self.parse_col_unit(val),

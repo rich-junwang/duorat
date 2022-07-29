@@ -21,7 +21,8 @@
                 use_attention_mask: false,
                 use_token_type_ids: false,
                 use_position_ids: false,
-                use_segments: true
+                use_segments: true,
+                use_outputs_from: 'enc'
             },
             "rat_attention_dropout": 0.1,
             "rat_dropout": 0.1,
@@ -61,7 +62,7 @@
     },
     "train": {
         "amp_enabled": true,
-        "batch_size": 20,
+        "batch_size": 8, #20,
         "eval_batch_size": 20,
         "eval_beam_size": 1,
         "eval_decode_max_time_step": 500,
@@ -71,7 +72,7 @@
         "eval_on_val": true,
         "infer_min_n": 5000,
         "max_steps": 100000,
-        "n_grad_accumulation_steps": 12,
+        "n_grad_accumulation_steps": 16,  #12,
         "num_eval_items": 1034,
         "report_every_n": 10
     }

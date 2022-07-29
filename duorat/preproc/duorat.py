@@ -80,7 +80,6 @@ from duorat.types import (
     DuoRATInputSegment,
     ActionToken,
     Sparse1DMaskTensorBuilder,
-    FineScoping,
     AttentionScope,
     Scoping,
 )
@@ -105,7 +104,7 @@ class InputToSourceGatherIndexBuilder(object):
     )
 
     def add_input_token(
-        self, input_token: Token[InputId, VT], copy: bool = False
+            self, input_token: Token[InputId, VT], copy: bool = False
     ) -> "InputToSourceGatherIndexBuilder":
         builder = deepcopy(self) if copy is True else self
         if (type(input_token), input_token.key) not in builder.input_token_map:
@@ -125,7 +124,7 @@ class InputToSourceGatherIndexBuilder(object):
         return builder
 
     def add_input_tokens(
-        self, input_tokens: Iterable[Token[InputId, VT]], copy: bool = False
+            self, input_tokens: Iterable[Token[InputId, VT]], copy: bool = False
     ) -> "InputToSourceGatherIndexBuilder":
         builder = deepcopy(self) if copy is True else self
         for input_token in input_tokens:
@@ -133,7 +132,7 @@ class InputToSourceGatherIndexBuilder(object):
         return builder
 
     def add_source_token(
-        self, source_token: Token[InputId, VT_P], copy: bool = False
+            self, source_token: Token[InputId, VT_P], copy: bool = False
     ) -> "InputToSourceGatherIndexBuilder":
         builder = deepcopy(self) if copy is True else self
         if (type(source_token), source_token.key) not in builder.source_token_map:
@@ -155,7 +154,7 @@ class InputToSourceGatherIndexBuilder(object):
         return builder
 
     def add_source_tokens(
-        self, source_tokens: Iterable[Token[InputId, VT_P]], copy: bool = False
+            self, source_tokens: Iterable[Token[InputId, VT_P]], copy: bool = False
     ) -> "InputToSourceGatherIndexBuilder":
         builder = deepcopy(self) if copy is True else self
         for source_token in source_tokens:
@@ -201,7 +200,7 @@ class DuoRATInputSegmentBuilder(object):
         )
 
     def add_input_token(
-        self, input_token: Token[InputId, str], copy: bool = False
+            self, input_token: Token[InputId, str], copy: bool = False
     ) -> "DuoRATInputSegmentBuilder":
         builder = deepcopy(self) if copy is True else self
         positioned_input_token = replace(
@@ -211,7 +210,7 @@ class DuoRATInputSegmentBuilder(object):
             ),
         )
         builder.input_token_max_position_pointer = (
-            builder.input_token_max_position_pointer + input_token.position + 1
+                builder.input_token_max_position_pointer + input_token.position + 1
         )
         builder.input_a_builder.add_token(
             token=replace(
@@ -235,7 +234,7 @@ class DuoRATInputSegmentBuilder(object):
         return builder
 
     def add_input_tokens(
-        self, input_tokens: Iterable[Token[InputId, str]], copy: bool = False
+            self, input_tokens: Iterable[Token[InputId, str]], copy: bool = False
     ) -> "DuoRATInputSegmentBuilder":
         builder = deepcopy(self) if copy is True else self
         for input_token in input_tokens:
@@ -243,7 +242,7 @@ class DuoRATInputSegmentBuilder(object):
         return builder
 
     def add_positioned_source_token(
-        self, positioned_source_token: Token[InputId, str], copy: bool = False
+            self, positioned_source_token: Token[InputId, str], copy: bool = False
     ) -> "DuoRATInputSegmentBuilder":
         builder = deepcopy(self) if copy is True else self
         builder.input_to_source_gather_index_builder.add_source_token(
@@ -252,9 +251,9 @@ class DuoRATInputSegmentBuilder(object):
         return builder
 
     def add_positioned_source_tokens(
-        self,
-        positioned_source_tokens: Iterable[Token[InputId, str]],
-        copy: bool = False,
+            self,
+            positioned_source_tokens: Iterable[Token[InputId, str]],
+            copy: bool = False,
     ) -> "DuoRATInputSegmentBuilder":
         builder = deepcopy(self) if copy is True else self
         for positioned_source_token in positioned_source_tokens:
@@ -341,16 +340,16 @@ class DuoRATEncoderItemBuilder(object):
         )
 
     def add_input_token(
-        self, input_token: Token[InputId, str], copy: bool = False
+            self, input_token: Token[InputId, str], copy: bool = False
     ) -> "DuoRATEncoderItemBuilder":
         builder = deepcopy(self) if copy is True else self
         builder.input_segment_builders[input_token.scope].add_input_token(
             input_token=input_token
         )
         if (
-            builder.max_supported_input_length is not None
-            and builder.input_token_max_position_pointer + input_token.position + 1
-            > builder.max_supported_input_length
+                builder.max_supported_input_length is not None
+                and builder.input_token_max_position_pointer + input_token.position + 1
+                > builder.max_supported_input_length
         ):
             logger.warning(
                 "input token tensor has been truncated to {} tokens, "
@@ -368,7 +367,7 @@ class DuoRATEncoderItemBuilder(object):
                 ),
             )
             builder.input_token_max_position_pointer = (
-                builder.input_token_max_position_pointer + input_token.position + 1
+                    builder.input_token_max_position_pointer + input_token.position + 1
             )
             builder.input_a_builder.add_token(
                 token=replace(
@@ -397,15 +396,15 @@ class DuoRATEncoderItemBuilder(object):
         return builder
 
     def add_input_tokens(
-        self, input_tokens: Iterable[Token[InputId, str]], copy: bool = False
+            self, input_tokens: Iterable[Token[InputId, str]], copy: bool = False
     ) -> "DuoRATEncoderItemBuilder":
         builder = deepcopy(self) if copy is True else self
         input_tokens = list(input_tokens)
-
+        
         if (
-            builder.max_supported_input_length is not None
-            and builder.input_token_max_position_pointer + len(input_tokens)
-            > builder.max_supported_input_length
+                builder.max_supported_input_length is not None
+                and builder.input_token_max_position_pointer + len(input_tokens)
+                > builder.max_supported_input_length
         ):
             logger.warning(
                 "input token tensor has been truncated to {} tokens, "
@@ -414,14 +413,15 @@ class DuoRATEncoderItemBuilder(object):
                     builder.input_token_max_position_pointer + len(input_tokens),
                 )
             )
-            input_tokens = input_tokens[:(builder.max_supported_input_length - builder.input_token_max_position_pointer)]
+            input_tokens = input_tokens[
+                           :(builder.max_supported_input_length - builder.input_token_max_position_pointer)]
 
         for input_token in input_tokens:
             builder.add_input_token(input_token=input_token)
         return builder
 
     def add_source_token(
-        self, source_token: Token[InputId, str], copy: bool = False
+            self, source_token: Token[InputId, str], copy: bool = False
     ) -> "DuoRATEncoderItemBuilder":
         builder = deepcopy(self) if copy is True else self
         positioned_source_token = replace(
@@ -432,7 +432,7 @@ class DuoRATEncoderItemBuilder(object):
         )
         builder.positioned_source_tokens.append(positioned_source_token)
         builder.source_token_max_position_pointer = (
-            builder.source_token_max_position_pointer + source_token.position + 1
+                builder.source_token_max_position_pointer + source_token.position + 1
         )
         for _, input_segment_builder in builder.input_segment_builders.items():
             input_segment_builder.add_positioned_source_token(
@@ -449,7 +449,7 @@ class DuoRATEncoderItemBuilder(object):
         return builder
 
     def add_source_tokens(
-        self, source_tokens: Iterable[Token[InputId, str]], copy: bool = False
+            self, source_tokens: Iterable[Token[InputId, str]], copy: bool = False
     ) -> "DuoRATEncoderItemBuilder":
         builder = deepcopy(self) if copy is True else self
         for source_token in source_tokens:
@@ -586,7 +586,7 @@ class DuoRATDecoderItemBuilder(object):
         )
 
     def add_action_token(
-        self, action_token: ActionToken[Action], copy: bool = False,
+            self, action_token: ActionToken[Action], copy: bool = False,
     ) -> "DuoRATDecoderItemBuilder":
         builder = deepcopy(self) if copy is True else self
         if isinstance(builder.parsing_result, Done):
@@ -599,7 +599,7 @@ class DuoRATDecoderItemBuilder(object):
                 ),
             )
             builder.action_token_max_position_pointer = (
-                builder.action_token_max_position_pointer + action_token.position + 1
+                    builder.action_token_max_position_pointer + action_token.position + 1
             )
             action_info = ActionInfo(
                 action=positioned_action_token.value,
@@ -625,7 +625,7 @@ class DuoRATDecoderItemBuilder(object):
             raise ValueError("Invalid parsing state: {}".format(builder.parsing_result))
 
     def add_action_tokens(
-        self, action_tokens: Iterable[ActionToken[Action]], copy: bool = False
+            self, action_tokens: Iterable[ActionToken[Action]], copy: bool = False
     ) -> "DuoRATDecoderItemBuilder":
         builder = deepcopy(self) if copy is True else self
         for action_token in action_tokens:
@@ -633,9 +633,9 @@ class DuoRATDecoderItemBuilder(object):
         return builder
 
     def _add_positioned_action_info_token(
-        self,
-        positioned_action_info_token: ActionInfoToken[ActionInfo],
-        copy: bool = False,
+            self,
+            positioned_action_info_token: ActionInfoToken[ActionInfo],
+            copy: bool = False,
     ) -> "DuoRATDecoderItemBuilder":
         builder = deepcopy(self) if copy is True else self
         builder.target_builder.add_token(
@@ -730,16 +730,17 @@ class DuoRATHypothesis(Hypothesis[DuoRATDecoderItemBuilder]):
 
 
 def duo_rat_encoder_item(
-    preproc_item: RATPreprocItem,
-    input_a_str_to_id: Callable[[str], int],
-    input_b_str_to_id: Callable[[str], int],
-    max_supported_input_length: Optional[int],
-    input_attention_scoping: Scoping,
-    source_attention_scoping: Scoping,
-    source_relation_types: FrozenDict[SourceRelation, int],
-    schema_input_token_ordering: str,
-    schema_source_token_ordering: str,
-    device: torch.device,
+        preproc_item: RATPreprocItem,
+        input_a_str_to_id: Callable[[str], int],
+        input_b_str_to_id: Callable[[str], int],
+        max_supported_input_length: Optional[int],
+        input_attention_scoping: Scoping,
+        source_attention_scoping: Scoping,
+        source_relation_types: FrozenDict[SourceRelation, int],
+        schema_input_token_ordering: str,
+        schema_source_token_ordering: str,
+        device: torch.device,
+        interaction_size: int,
 ) -> Tuple[DuoRATEncoderItem, DuoRATEncoderItemBuilder]:
     encoder_item_builder = DuoRATEncoderItemBuilder(
         input_a_str_to_id=input_a_str_to_id,
@@ -750,46 +751,85 @@ def duo_rat_encoder_item(
         source_relation_types=source_relation_types,
         max_supported_input_length=max_supported_input_length,
     )
-    encoder_item_builder.add_input_tokens(
-        input_tokens=itertools.chain(
-            question_input_tokens(
-                question=preproc_item.question, scoping=input_attention_scoping
-            ),
-            schema_input_tokens(
-                sql_schema=preproc_item.sql_schema,
-                schema_token_ordering=schema_input_token_ordering,
-                scoping=input_attention_scoping,
-            ),
+    if preproc_item.interaction is None or len(preproc_item.interaction) - interaction_size < 0:
+        encoder_item_builder.add_input_tokens(
+            input_tokens=itertools.chain(
+                question_input_tokens(
+                    question=preproc_item.question, scoping=input_attention_scoping
+                ),
+                schema_input_tokens(
+                    sql_schema=preproc_item.sql_schema,
+                    schema_token_ordering=schema_input_token_ordering,
+                    scoping=input_attention_scoping,
+                ),
+            )
         )
-    )
-    encoder_item_builder.add_source_tokens(
-        source_tokens=itertools.chain(
-            question_source_tokens(
-                question=preproc_item.question, scoping=source_attention_scoping
-            ),
-            schema_source_tokens(
-                sql_schema=preproc_item.sql_schema,
-                schema_token_ordering=schema_source_token_ordering,
-                scoping=source_attention_scoping,
-            ),
+        encoder_item_builder.add_source_tokens(
+            source_tokens=itertools.chain(
+                question_source_tokens(
+                    question=preproc_item.question, scoping=source_attention_scoping
+                ),
+                schema_source_tokens(
+                    sql_schema=preproc_item.sql_schema,
+                    schema_token_ordering=schema_source_token_ordering,
+                    scoping=source_attention_scoping,
+                ),
+            )
         )
-    )
+    elif interaction_size > 0:
+        total_interaction_size = len(preproc_item.interaction)
+        encoder_item_builder.add_input_tokens(
+            input_tokens=itertools.chain(
+                # interaction (history)
+                *(question_input_tokens(preproc_item.interaction[i], scoping=input_attention_scoping) for i in
+                  range(total_interaction_size - interaction_size, total_interaction_size)),
+                # current question
+                question_input_tokens(
+                    question=preproc_item.question, scoping=input_attention_scoping
+                ),
+                # schema
+                schema_input_tokens(
+                    sql_schema=preproc_item.sql_schema,
+                    schema_token_ordering=schema_input_token_ordering,
+                    scoping=input_attention_scoping,
+                )
+            )
+        )
+
+        encoder_item_builder.add_source_tokens(
+            source_tokens=itertools.chain(
+                # interaction (history)
+                *(question_source_tokens(preproc_item.interaction[i], scoping=source_attention_scoping) for
+                  i in
+                  range(total_interaction_size - interaction_size, total_interaction_size)),
+                # current question
+                question_source_tokens(
+                    question=preproc_item.question, scoping=source_attention_scoping
+                ),
+                # schema
+                schema_source_tokens(
+                    sql_schema=preproc_item.sql_schema,
+                    schema_token_ordering=schema_source_token_ordering,
+                    scoping=source_attention_scoping,
+                )
+            )
+        )
 
     encoder_item = encoder_item_builder.build(device=device)
     return encoder_item, encoder_item_builder
 
 
 def duo_rat_decoder_item(
-    preproc_item: RATPreprocItem,
-    positioned_source_tokens: Sequence[Token[InputId, str]],
-    target_vocab: Vocab,
-    transition_system: TransitionSystem,
-    allow_unk: bool,
-    source_attention_scoping: Scoping,
-    target_attention_scoping: Scoping,
-    target_relation_types: FrozenDict[TargetRelation, int],
-    memory_relation_types: FrozenDict[MemoryRelation, int],
-    device: torch.device,
+        preproc_item: RATPreprocItem,
+        positioned_source_tokens: Sequence[Token[InputId, str]],
+        target_vocab: Vocab,
+        transition_system: TransitionSystem,
+        allow_unk: bool,
+        source_attention_scoping: Scoping,
+        target_attention_scoping: Scoping,
+        target_relation_types: FrozenDict[TargetRelation, int],
+        memory_relation_types: FrozenDict[MemoryRelation, int],
+        device: torch.device,
 ) -> Tuple[DuoRATDecoderItem, DuoRATDecoderItemBuilder]:
     decoder_item_builder = DuoRATDecoderItemBuilder(
         positioned_source_tokens=positioned_source_tokens,
@@ -811,14 +851,14 @@ def duo_rat_decoder_item(
 
 
 def duo_rat_item(
-    preproc_item: RATPreprocItem,
-    get_encoder_item: Callable[
-        [RATPreprocItem], Tuple[DuoRATEncoderItem, DuoRATEncoderItemBuilder]
-    ],
-    get_decoder_item: Callable[
-        [RATPreprocItem, Sequence[Token[InputId, str]]],
-        Tuple[DuoRATDecoderItem, DuoRATDecoderItemBuilder],
-    ],
+        preproc_item: RATPreprocItem,
+        get_encoder_item: Callable[
+            [RATPreprocItem], Tuple[DuoRATEncoderItem, DuoRATEncoderItemBuilder]
+        ],
+        get_decoder_item: Callable[
+            [RATPreprocItem, Sequence[Token[InputId, str]]],
+            Tuple[DuoRATDecoderItem, DuoRATDecoderItemBuilder],
+        ],
 ) -> DuoRATItem:
     encoder_item, encoder_item_builder = get_encoder_item(preproc_item)
     decoder_item, _ = get_decoder_item(
@@ -829,9 +869,9 @@ def duo_rat_item(
 
 def duo_rat_encoder_batch(items: Iterable[DuoRATEncoderItem]) -> DuoRATEncoderBatch:
     def _pad(
-        tensors: Sequence[torch.Tensor],
-        num_padding_dimensions: int = 1,
-        padding_value: int = 0,
+            tensors: Sequence[torch.Tensor],
+            num_padding_dimensions: int = 1,
+            padding_value: int = 0,
     ) -> torch.Tensor:
         return pad_nd_tensor(
             tensors=tensors,
@@ -841,7 +881,7 @@ def duo_rat_encoder_batch(items: Iterable[DuoRATEncoderItem]) -> DuoRATEncoderBa
         )
 
     def _input_segment(
-        input_segments: Iterable[DuoRATInputSegment],
+            input_segments: Iterable[DuoRATInputSegment],
     ) -> DuoRATInputSegmentBatch:
         input_key_padding_mask = _pad(
             tensors=[segment.input_key_padding_mask for segment in input_segments],
@@ -929,9 +969,9 @@ def duo_rat_encoder_batch(items: Iterable[DuoRATEncoderItem]) -> DuoRATEncoderBa
 
 def duo_rat_decoder_batch(items: Iterable[DuoRATDecoderItem]) -> DuoRATDecoderBatch:
     def _pad(
-        getter: Callable[[DuoRATDecoderItem], torch.Tensor],
-        num_padding_dimensions: int = 1,
-        padding_value: int = 0,
+            getter: Callable[[DuoRATDecoderItem], torch.Tensor],
+            num_padding_dimensions: int = 1,
+            padding_value: int = 0,
     ) -> torch.Tensor:
         return pad_nd_tensor(
             tensors=[getter(item) for item in items],

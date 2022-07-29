@@ -28,8 +28,8 @@
         },
     },
     train+: {
-        batch_size: 20,
-        n_grad_accumulation_steps: 12,
+        batch_size: 12,  #20,
+        n_grad_accumulation_steps: 20,  #12,
         eval_batch_size: 50,
         eval_every_n: 5000,
         infer_min_n: 5000,

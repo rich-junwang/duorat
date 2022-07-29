@@ -9,6 +9,7 @@ from dataclasses import replace
 from torchtext.vocab import Vocab, GloVe, Vectors
 
 from duorat.datasets.spider import SpiderItem
+from duorat.datasets.sparc import SparcItem
 from duorat.asdl.transition_system import (
     MaskAction,
     ApplyRuleAction,
@@ -68,6 +69,8 @@ class DuoRATPreproc(abstract_preproc.AbstractPreproc):
 
         self.preproc_items: Dict[str, List[RATPreprocItem]] = {}
 
+        self.interaction_type: str = kwargs.get("interaction_type", "source")
+
     def input_a_str_to_id(self, s: str) -> int:
         raise NotImplementedError
 
@@ -101,10 +104,16 @@ class DuoRATPreproc(abstract_preproc.AbstractPreproc):
             return True, asdl_ast
         except Exception as e:
             if "train" not in section:
-                raise e
+                # raise e
                 return True, None
-            else:
-                raise e
+            # else:
+            #     raise e
+            print(f"Invalid item: {str(e)}!")
+            print(f"Item question: {item.question}")
+            print(f"Item SQL: {item.query}")
+            print(f"Item db: {item.db_path}")
+            print("---------")
+            return False, None
 
     def preprocess_item(
         self,
@@ -164,12 +173,14 @@ class DuoRATPreproc(abstract_preproc.AbstractPreproc):
             (ReduceAction(), MaskAction()),
         ):
             self.target_vocab_counter[element] = self.min_freq
+
         self.target_vocab = ActionVocab(
             counter=self.target_vocab_counter,
             max_size=50000,
             min_freq=self.min_freq,
             specials=[ActionVocab.UNK],
         )
+
         with open(self.target_vocab_path, "wb") as f:
             pickle.dump(self.target_vocab, f)
 
@@ -178,8 +189,12 @@ class DuoRATPreproc(abstract_preproc.AbstractPreproc):
             self.target_vocab = pickle.load(f)
 
     def dataset(self, section: str) -> List[RATPreprocItem]:
+        if not os.path.exists(os.path.join(self.save_path, section + ".pkl")):
+            return None
+
         with open(os.path.join(self.save_path, section + ".pkl"), "rb") as f:
             items = pickle.load(f)
+
         return items
 
 
@@ -260,6 +275,7 @@ class TransformerDuoRATPreproc(DuoRATPreproc):
         sql_schema: SQLSchema,
         validation_info: AbstractSyntaxTree,
     ) -> RATPreprocItem:
+        # current question
         slml_question: str = self.schema_linker.question_to_slml(
             question=item.question, sql_schema=sql_schema,
         ) if item.slml_question is None else item.slml_question
@@ -269,17 +285,44 @@ class TransformerDuoRATPreproc(DuoRATPreproc):
 
         parser = SLMLParser(sql_schema=sql_schema, tokenizer=self.tokenizer)
         parser.feed(data=slml_question)
-        parser.close()
 
         question: Tuple[PreprocQuestionToken, ...] = parser.question_tokens
 
+        # SQL output
         asdl_ast = validation_info
         actions = (
             tuple(self.transition_system.get_actions(asdl_ast))
             if asdl_ast is not None
             else tuple()
         )
-        return RATPreprocItem(question=question, sql_schema=sql_schema, actions=actions)
+
+        if type(item) == SpiderItem:
+            parser.close()
+            return RATPreprocItem(question=question, sql_schema=sql_schema, actions=actions)
+        elif type(item) == SparcItem:
+            # interaction history
+            interaction: List[Tuple[PreprocQuestionToken, ...]] = []
+            for utter in item.interaction:
+                slml_question: str = self.schema_linker.question_to_slml(
+                    question=utter.question, sql_schema=sql_schema,
+                ) if utter.slml_question is None else utter.slml_question
+
+                item.slml_question = slml_question
+                # self.grouped_payload[sql_schema.db_id].append(item.orig)
+
+                parser.reset()
+                parser.feed(data=slml_question)
+
+                i_question: Tuple[PreprocQuestionToken, ...] = parser.question_tokens
+                interaction.append(i_question)
+
+            parser.close()
+
+            return RATPreprocItem(question=question, sql_schema=sql_schema, actions=actions,
+                                  interaction=tuple(interaction),
+                                  type=item.type)
+        else:
+            raise TypeError(f"{item.__str__()} must be either SpiderItem or SparcItem.")
 
     def update_vocab(self, item: SpiderItem, preproc_item: RATPreprocItem):
         if item.spider_schema.db_id in self.counted_db_ids:
@@ -378,6 +421,7 @@ class BertDuoRATPreproc(DuoRATPreproc):
         super(BertDuoRATPreproc, self).__init__(**kwargs)
         self.add_cls_token = kwargs["add_cls_token"]
         self.add_sep_token = kwargs["add_sep_token"]
+        self.use_column_type = kwargs.get('use_column_type', True)
         assert isinstance(self.tokenizer, BERTTokenizer)
 
     def input_a_str_to_id(self, s: str) -> int:
@@ -392,7 +436,7 @@ class BertDuoRATPreproc(DuoRATPreproc):
         return (
             ([self.tokenizer.cls_token] if self.add_cls_token else [])
             + self.tokenizer.tokenize(
-                ("{} ".format(type) if type is not None else "") + name
+                ("{} ".format(type) if type is not None and self.use_column_type else "") + name
             )
             + ([self.tokenizer.sep_token] if self.add_sep_token else [])
         )
@@ -403,36 +447,94 @@ class BertDuoRATPreproc(DuoRATPreproc):
         sql_schema: SQLSchema,
         validation_info: AbstractSyntaxTree,
     ) -> RATPreprocItem:
+        # current question
         slml_question: str = self.schema_linker.question_to_slml(
             question=item.question, sql_schema=sql_schema,
         ) if item.slml_question is None else item.slml_question
         item.slml_question = slml_question
 
-        parser = SLMLParser(sql_schema=sql_schema, tokenizer=self.tokenizer)
+        parser = SLMLParser(sql_schema=sql_schema,
+                            tokenizer=self.tokenizer,
+                            do_filter_bad_matches=self.schema_linker.do_filter_bad_matches)
         parser.feed(data=slml_question)
-        parser.close()
 
         question: Tuple[PreprocQuestionToken, ...] = (
-            (
-                PreprocQuestionToken(
-                    key=QuestionTokenId(uuid4()), value=self.tokenizer.cls_token
-                ),
-            )
-            if self.add_cls_token
-            else tuple()
-        ) + parser.question_tokens + (
-            (
-                PreprocQuestionToken(
-                    key=QuestionTokenId(uuid4()), value=self.tokenizer.sep_token
-                ),
-            )
-            if self.add_sep_token
-            else tuple()
-        )
+                                                         (
+                                                             PreprocQuestionToken(
+                                                                 key=QuestionTokenId(uuid4()),
+                                                                 value=self.tokenizer.cls_token
+                                                             ),
+                                                         )
+                                                         if self.add_cls_token
+                                                         else tuple()
+                                                     ) + parser.question_tokens + (
+                                                         (
+                                                             PreprocQuestionToken(
+                                                                 key=QuestionTokenId(uuid4()),
+                                                                 value=self.tokenizer.sep_token
+                                                             ),
+                                                         )
+                                                         if self.add_sep_token
+                                                         else tuple()
+                                                     )
 
+        # SQL output
         asdl_ast = validation_info
         actions = tuple(self.transition_system.get_actions(asdl_ast))
-        return RATPreprocItem(question=question, sql_schema=sql_schema, actions=actions)
+
+        if type(item) == SpiderItem:
+            parser.close()
+            return RATPreprocItem(question=question, sql_schema=sql_schema, actions=actions)
+        elif type(item) == SparcItem:
+            # interaction history
+            interaction: List[Tuple[PreprocQuestionToken, ...]] = []
+            for utter in item.interaction:
+                if self.interaction_type == "source":
+                    prev_question = utter.question
+                elif self.interaction_type == "target":
+                    prev_question = utter.query.replace('*', '')
+                elif self.interaction_type == "source&target":
+                    prev_question = f"{utter.question} {utter.query.replace('*', '')}"
+                else:
+                    raise ValueError(f"Unknown preproc.interaction_type. Expected: 'source' or 'target'. Got {self.interaction_type}")
+
+                slml_question: str = self.schema_linker.question_to_slml(
+                    question=prev_question,
+                    sql_schema=sql_schema,
+                ) if utter.slml_question is None else utter.slml_question
+                utter.slml_question = slml_question
+
+                parser.reset()
+                parser.feed(data=slml_question)
+
+                i_question: Tuple[PreprocQuestionToken, ...] = (
+                                                                 (
+                                                                     PreprocQuestionToken(
+                                                                         key=QuestionTokenId(uuid4()),
+                                                                         value=self.tokenizer.cls_token
+                                                                     ),
+                                                                 )
+                                                                 if self.add_cls_token
+                                                                 else tuple()
+                                                             ) + parser.question_tokens + (
+                                                                 (
+                                                                     PreprocQuestionToken(
+                                                                         key=QuestionTokenId(uuid4()),
+                                                                         value=self.tokenizer.sep_token
+                                                                     ),
+                                                                 )
+                                                                 if self.add_sep_token
+                                                                 else tuple()
+                                                             )
+                interaction.append(i_question)
+
+            parser.close()
+
+            return RATPreprocItem(question=question, sql_schema=sql_schema, actions=actions,
+                                  interaction=tuple(interaction),
+                                  type=item.type)
+        else:
+            raise TypeError(f"{item.__str__()} must be either SpiderItem or SparcItem.")
 
     def update_vocab(self, item: SpiderItem, preproc_item: RATPreprocItem):
         if item.spider_schema.db_id in self.counted_db_ids:

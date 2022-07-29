@@ -27,7 +27,9 @@ import datetime
 import itertools
 import json
 import os
+import shutil
 import traceback
+import pathlib
 from typing import Type, List
 
 import _jsonnet
@@ -36,7 +38,7 @@ import numpy as np
 
 # noinspection PyUnresolvedReferences
 from torch.cuda.amp import autocast, GradScaler
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 
 # noinspection PyUnresolvedReferences
 from duorat import datasets
@@ -51,6 +53,8 @@ from duorat import models
 from duorat.asdl.lang.spider.spider_transition_system import SpiderTransitionSystem
 from duorat.types import RATPreprocItem
 
+from duorat.utils.determinism import set_torch_determinism, set_random_seed
+
 # noinspection PyUnresolvedReferences
 from duorat.utils import optimizers
 from duorat.utils import registry, parallelizer
@@ -59,18 +63,6 @@ from duorat.utils import saver as saver_mod
 from duorat.utils.evaluation import evaluate_default, load_from_lines
 from third_party.spider.evaluation import LEVELS
 from scripts.preprocess import Preprocessor
-import torch.distributed as dist
-
-
-class SimpleDataset(Dataset):
-    def __init__(self, data):
-        self.instances = data
-
-    def __len__(self):
-        return len(self.instances)
-
-    def __getitem__(self, index):
-        return self.instances[index]
 
 
 class Logger:
@@ -85,7 +77,7 @@ class Logger:
         formatted = "[{}] {}".format(
             datetime.datetime.now().replace(microsecond=0).isoformat(), msg
         )
-        print(formatted)
+        # print(formatted)
         if self.log_file:
             self.log_file.write(formatted + "\n")
             if self.reopen_to_flush:
@@ -98,6 +90,11 @@ class Logger:
 
 class Trainer:
     def __init__(self, logger, config):
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
+
         self.logger = logger
         self.config = config
 
@@ -107,24 +104,22 @@ class Trainer:
         self.model_random = random_state.RandomContext(
             self.config["train"].get("model_seed", None)
         )
-
         self.init_random = random_state.RandomContext(
             self.config["train"].get("init_seed", None)
         )
-
-        self.local_rank = self.config["dist"]["local_rank"]
-        self.dist_backend = self.config["dist"]["dist_backend"]
-        if torch.cuda.is_available():
-            device = torch.device("cuda:{}".format(self.local_rank))
-        else:
-            device = torch.device("cpu")
-        self.device = device
+        other_seed = self.config["train"].get("other_seed", None)
+        if other_seed:
+            set_random_seed(seed=other_seed)
 
         with self.init_random:
             # 0. Construct preprocessors
             self.model_preproc = registry.construct(
                 "preproc", self.config["model"]["preproc"],
             )
+
+            if self.config["model"]["preproc"].get('pre_target_vocab', None) is not None:
+                from shutil import copyfile
+                copyfile(self.config["model"]["preproc"]['pre_target_vocab'], self.model_preproc.target_vocab_path)
             self.model_preproc.load()
 
             # 1. Construct model
@@ -133,23 +128,18 @@ class Trainer:
             )
             self.model.to(device=device)
 
-        # For now we hardcode the setting here. Will pulll these parameters from config file
-        self.distributed_training = False
-        num_gpus = self.config["dist"]["num_gpus"]
-        self.num_gpus = num_gpus
-        self.hosts = self.config["dist"]["hosts"]
-        self.world_size = num_gpus * len(self.hosts)
-        self.distributed_training = self.world_size > 1
-        self.host_rank = self.hosts.index(self.config["dist"]["current_host"])
-        self.rank = self.host_rank * num_gpus + self.local_rank
+        if self.config["train"].get("deterministic", None):
+            set_torch_determinism()
 
     def _log_loss(self, last_step, loss):
-        self.logger.log("Step {}: loss={:.4f}".format(last_step, loss))
+        self.logger.log("Step {}: loss={:.8f}".format(last_step, loss))
+        # self.logger.log("Step {}: loss={:.4f}".format(last_step, loss))
 
     def _log_lr(self, last_step, lrs: List[dict]):
         for lr in lrs:
             self.logger.log(
-                "Step {}: lr[{}]={:.4f}".format(last_step, lr["name"], lr["value"])
+                "Step {}: lr[{}]={:.8f}".format(last_step, lr["name"], lr["value"])
+                # "Step {}: lr[{}]={:.4f}".format(last_step, lr["name"], lr["value"])
             )
 
     def _log_stats(self, last_step, eval_section, stats):
@@ -163,8 +153,7 @@ class Trainer:
 
     def train(self, modeldir):
         # Save the config info
-        if self.rank == 0:
-            with open(
+        with open(
                 os.path.join(
                     modeldir,
                     "config-{}.json".format(
@@ -172,8 +161,8 @@ class Trainer:
                     ),
                 ),
                 "w",
-            ) as f:
-                json.dump(self.config, f, sort_keys=True, indent=4)
+        ) as f:
+            json.dump(self.config, f, sort_keys=True, indent=4)
 
         # slight difference here vs. unrefactored train: The init_random starts over here. Could be fixed if it was important by saving random state at end of init
         with self.init_random:
@@ -216,36 +205,35 @@ class Trainer:
         saver = saver_mod.Saver(
             self.model, optimizer
         )
-        # last_step, best_val_all_exact = saver.restore(modeldir)
-        last_step, best_val_all_exact = 0, 0
-
-        if self.distributed_training:
-            self.logger.log("dist.init_process_group")
-            if len(self.hosts) > 1:
-                dist.init_process_group(backend=self.dist_backend, world_size=self.world_size, rank=self.rank)  # for sagemaker
-            else:
-                dist_url = "tcp://127.0.0.1:8080"
-                dist.init_process_group(backend=self.dist_backend, init_method=dist_url, world_size=self.world_size,
-                                        rank=self.rank)
-            self.logger.log("Initialized the distributed environment: %s backed on %d nodes." % (
-                self.dist_backend, len(self.hosts)))
-            self.logger.log(
-                "World size: %d, Host rank %d, Rank %d, Local rank %d" % (self.world_size, self.host_rank,
-                                                                          self.rank, self.local_rank))
-
-        if self.distributed_training:
-            self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[self.local_rank],
-                                                                   find_unused_parameters=True)
-
+        last_step, best_val_all_exact = saver.restore(model_dir=modeldir,
+                                                      load_best=self.config["train"].get('load_best',
+                                                                                         False))
         if last_step is 0 and self.config["train"].get("initialize_from", False):
-            saver.restore(self.config["train"]["initialize_from"])
-            self.logger.log(
-                "Model initialized from {}".format(
-                    self.config["train"]["initialize_from"]
-                )
-            )
+            filters = self.config["train"]["initialize_from"].get('model_weight_filters', [])
+            if len(filters) > 0:
+                saver.restore_part(other_model_dir=self.config["train"]["initialize_from"].get('pretrained_model_path',
+                                                                                               ''),
+                                   filters=filters)
+            else:
+                pre_model_dir = self.config["train"]["initialize_from"].get('pretrained_model_path', '')
+                if os.path.exists(pre_model_dir):
+                    last_step, best_val_all_exact = saver.restore(model_dir=pre_model_dir,
+                                                                  load_best=True)
+
+                    self.logger.log(
+                        "Model initialized from {}".format(pre_model_dir)
+                    )
+                    self.logger.log("Best step from previous train: "
+                                    "{} with best accuracy on val {}".format(last_step, best_val_all_exact))
+                    last_step = 0  # for continuous training with specified max_steps
+                    if self.config["train"]["initialize_from"].get("reset_dev_accuracy", False):
+                        best_val_all_exact = 0.0
+                else:
+                    raise ValueError(f"train.initialize_from.pretrained_model_path is not valid.")
         else:
             self.logger.log(f"Model restored, the last step is {last_step}, best val_all_exact is {best_val_all_exact}")
+
+        self.logger.log(f"Number of parameters: {self.model.count_parameters()}")
 
         # 3. Get training data somewhere
         with self.data_random:
@@ -253,43 +241,72 @@ class Trainer:
             if data_splits is not None:
                 self.logger.log(f"Using custom training data splits: {data_splits}.")
             else:
-                data_splits = [
-                    section for section in self.config["data"] if "train" in section
-                ]
-            train_data = SimpleDataset(
-                list(itertools.chain.from_iterable(
-                    self.model_preproc.dataset(split) for split in data_splits
-                ))
-            )
+                # data_splits = [
+                #     section for section, _ in self.config["data"].items() if "train" in section
+                #                                                   and isinstance(self.config["data"][section], dict)
+                # ]
+                if isinstance(self.config["data"], list):
+                    datasets = self.config["data"]
+                else:
+                    datasets = [self.config["data"]]
+                data_splits = [f"{dataset['name']}_train" if 'name' in dataset else "train" for dataset in datasets]
 
-            if self.distributed_training:
-                train_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
+            sampler = None
+            if self.config["train"].get('batch_balancing', None) and len(data_splits) > 1:
+                self.logger.log(f"Apply batch balancing for each batch from multiple datasets...")
+                train_datasets = [self.model_preproc.dataset(split) for split in data_splits]
+                dataset_example_count = [len(train_dataset) for train_dataset in train_datasets]
+                dataset_weights = 1. / torch.Tensor(dataset_example_count)
+                train_ds_ids = []
+                for idx, train_dataset in enumerate(train_datasets):
+                    train_ds_ids.extend([idx] * len(train_dataset))
+                train_sample_weights = [dataset_weights[ds_id] for ds_id in train_ds_ids]
+                sampler = torch.utils.data.sampler.WeightedRandomSampler(train_sample_weights,
+                                                                         len(train_ds_ids)
+                                                                         )
+                train_datasets = torch.utils.data.ConcatDataset(
+                    datasets=train_datasets)
             else:
-                train_sampler = None
-
-            self.logger.log(f"{len(train_data)} training examples")
+                train_datasets = list(itertools.chain.from_iterable(
+                    self.model_preproc.dataset(split) for split in data_splits)
+                )
+            self.logger.log(f"There are {len(train_datasets)} training examples.")
 
             train_data_loader = self._yield_batches_from_epochs(
                 DataLoader(
-                    train_data,
+                    train_datasets,
                     batch_size=self.config["train"]["batch_size"],
-                    shuffle=(train_sampler is None),
-                    num_workers=8,
+                    shuffle=True if sampler is None else False,
                     drop_last=True,
-                    sampler=train_sampler,
                     collate_fn=lambda x: x,
+                    pin_memory=self.config["train"].get('pin_memory', False),
+                    num_workers=self.config["train"].get('num_workers', 0),
+                    sampler=sampler,
                 )
             )
+
+        # loader for train data
         train_eval_data_loader = DataLoader(
-            train_data,
+            train_datasets,
             batch_size=self.config["train"]["eval_batch_size"],
             collate_fn=lambda x: x,
         )
-        val_data = self.model_preproc.dataset("val")
+
+        # loader for val data
+        if isinstance(self.config["data"], list):
+            val_datasets = [self.model_preproc.dataset(f"{dataset['name']}_val") for dataset in self.config["data"]]
+            val_datasets = [val_dataset for val_dataset in val_datasets if val_dataset is not None]
+            val_datasets = list(itertools.chain.from_iterable(val_datasets))
+        else:
+            dataset_name = self.config["data"].get("name", None)
+            if dataset_name is not None:
+                val_datasets = self.model_preproc.dataset(f"{dataset_name}_val")
+            else:
+                val_datasets = self.model_preproc.dataset("val")
+        self.logger.log(f"There are {len(val_datasets)} validation examples.")
         val_data_loader = DataLoader(
-            val_data,
+            val_datasets,
             batch_size=self.config["train"]["eval_batch_size"],
-            num_workers=8,
             collate_fn=lambda x: x,
         )
 
@@ -305,15 +322,14 @@ class Trainer:
                 val_all_exact = self._eval_model(modeldir, last_step, val_data_loader, "val")
             return val_all_exact
 
-        if self.rank == 0:
-            val_all_exact = _evaluate_model()
-            saver.save(
-                modeldir,
-                last_step,
-                is_best=val_all_exact > best_val_all_exact,
-                best_validation_metric=max(val_all_exact, best_val_all_exact)
-            )
-            best_val_all_exact = max(val_all_exact, best_val_all_exact)
+        val_all_exact = _evaluate_model()
+        saver.save(
+            modeldir,
+            last_step,
+            is_best=val_all_exact > best_val_all_exact,
+            best_validation_metric=max(val_all_exact, best_val_all_exact)
+        )
+        best_val_all_exact = max(val_all_exact, best_val_all_exact)
 
         # Counter for grad aggregation
         grad_accumulation_counter = 0
@@ -330,7 +346,9 @@ class Trainer:
                 # Compute and apply gradient
                 with self.model_random:
                     with autocast(enabled=self.config["train"]["amp_enabled"]):
-                        loss = self.model(batch)["loss"]
+                        loss = self.model.compute_loss(batch, debug=self.config["train"].get("debug", False))
+                        if torch.isnan(loss).any():
+                            continue
                         loss /= self.config["train"]["n_grad_accumulation_steps"]
 
                 scaler.scale(loss).backward()
@@ -342,9 +360,9 @@ class Trainer:
                 grad_accumulation_counter += 1
                 # Update params every `n_grad_accumulation_steps` times
                 if (
-                    grad_accumulation_counter
-                    % self.config["train"]["n_grad_accumulation_steps"]
-                    == 0
+                        grad_accumulation_counter
+                        % self.config["train"]["n_grad_accumulation_steps"]
+                        == 0
                 ):
                     # may call unscale_ here to allow clipping unscaled gradients,
                     # see https://pytorch.org/docs/stable/notes/amp_examples.html#gradient-accumulation
@@ -377,18 +395,24 @@ class Trainer:
                         )
                         self._log_loss(last_step, cur_loss)
                         self._log_lr(last_step, cur_lrs)
-                    if self.rank == 0:
-                        # Evaluate model
-                        if last_step % self.config["train"]["eval_every_n"] == 0:
-                            val_all_exact = _evaluate_model()
-                            # Run saver
-                            saver.save(
-                                modeldir,
-                                last_step,
-                                is_best=val_all_exact > best_val_all_exact,
-                                best_validation_metric=max(val_all_exact, best_val_all_exact)
+                    # Evaluate model
+                    if last_step % self.config["train"]["eval_every_n"] == 0:
+                        val_all_exact = _evaluate_model()
+                        # Run saver
+                        saver.save(
+                            modeldir,
+                            last_step,
+                            is_best=val_all_exact > best_val_all_exact,
+                            best_validation_metric=max(val_all_exact, best_val_all_exact)
+                        )
+                        if val_all_exact > best_val_all_exact:
+                            self.logger.log(
+                                "Step {}: got better model checkpoint with averaged val_all_exact {}. Saved.".format(
+                                    last_step,
+                                    val_all_exact
+                                )
                             )
-                            best_val_all_exact = max(val_all_exact, best_val_all_exact)
+                        best_val_all_exact = max(val_all_exact, best_val_all_exact)
 
                     # Reset the list of losses
                     losses = []
@@ -402,22 +426,15 @@ class Trainer:
     def _eval_model(self, modeldir, last_step, eval_data_loader, eval_section):
         num_eval_items = self.config["train"]["num_eval_items"]
         stats = collections.defaultdict(float)
-        if isinstance(self.model, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel)):
-            model = self.model.module
-        else:
-            model = self.model
-        model.eval()
+        self.model.eval()
         with torch.no_grad():
             for eval_batch in eval_data_loader:
-                batch_res = self.model(eval_batch)
+                batch_res = self.model.eval_on_batch(eval_batch)
                 for k, v in batch_res.items():
-                    if torch.is_tensor(v):
-                        stats[k] += v.item()
-                    else:
-                        stats[k] += v
+                    stats[k] += v
                 if num_eval_items and stats["total"] > num_eval_items:
                     break
-        model.train()
+        self.model.train()
 
         # Divide each stat by 'total'
         for k in stats:
@@ -428,54 +445,96 @@ class Trainer:
 
         all_exact = 0
         if last_step >= self.config["train"]["infer_min_n"]:
-            metrics = self._infer(modeldir, last_step, eval_section)
-            stats.update(
-                {
-                    "{}_exact".format(level): metrics["total_scores"][level]["exact"]
-                    for level in LEVELS
-                }
-            )
-            all_exact = metrics["total_scores"]["all"]["exact"]
+            eval_metrics = self._infer(modeldir, last_step, eval_section)
+            if len(eval_metrics) == 1:
+                metrics = eval_metrics[list(eval_metrics.keys())[0]]
+                stats.update(
+                    {
+                        "{}_exact".format(level): metrics["total_scores"][level]["exact"]
+                        for level in LEVELS
+                    }
+                )
+                all_exact = metrics["total_scores"]["all"]["exact"]
+            else:  # multiple val datasets
+                all_exact = 0.
+                for dataset_name, metrics in eval_metrics.items():
+                    stats.update(
+                        {
+                            f"{dataset_name}_{level}_exact": metrics["total_scores"][level]["exact"]
+                            for level in LEVELS
+                        }
+                    )
+                    all_exact += metrics["total_scores"]["all"]["exact"]
+                # @Vu Hoang: average score for all_exact, maybe better one?
+                all_exact /= len(eval_metrics)
         self._log_stats(last_step, eval_section, stats)
         return all_exact
 
     def _infer(self, modeldir, last_step, eval_section):
         self.logger.log("Inferring...")
 
-        orig_data = registry.construct("dataset", self.config["data"][eval_section])
-        preproc_data: List[RATPreprocItem] = self.model_preproc.dataset(eval_section)
-
-        self.model.eval()
-        with torch.no_grad():
-            if isinstance(self.model.preproc.transition_system, SpiderTransitionSystem):
-                # Orig data only used with SpiderTransitionSystem
-                assert len(orig_data) == len(preproc_data)
-            inferred_lines = list(
-                self._inner_infer(
-                    model=self.model,
-                    orig_data=orig_data,
-                    preproc_data=preproc_data,
-                    nproc=self.config["train"]["eval_nproc"],
-                    beam_size=self.config["train"]["eval_beam_size"],
-                    decode_max_time_step=self.config["train"][
-                        "eval_decode_max_time_step"
-                    ],
-                )
-            )
-        self.model.train()
-
-        with open(f"{modeldir}/output-{last_step}", "w") as output_dst:
-            for line in inferred_lines:
-                output_dst.write(line)
-
-        if isinstance(self.model.preproc.transition_system, SpiderTransitionSystem):
-            return evaluate_default(orig_data, load_from_lines(inferred_lines))
+        if isinstance(self.config["data"], list):
+            datasets = self.config["data"]
         else:
-            raise NotImplementedError
+            datasets = [self.config["data"]]
+
+        eval_results = {}
+        for dataset in datasets:
+            if 'name' in dataset:
+                print(f"Inferring the {dataset['name']} dataset...")
+                name = dataset['name']
+            else:
+                name = 'default'
+
+            if eval_section not in dataset:
+                continue
+
+            # retrieve original data --> @Vu Hoang: can we do this step only once?
+            orig_data = registry.construct("dataset", dataset[eval_section])
+            orig_data.sample(sample_size=dataset.get(f'{eval_section}_sample_size', None))
+
+            # get preprocessed data
+            if name is 'default':
+                preproc_data: List[RATPreprocItem] = self.model_preproc.dataset(eval_section)
+            else:
+                preproc_data: List[RATPreprocItem] = self.model_preproc.dataset(f"{name}_{eval_section}")
+
+            if preproc_data is None:
+                continue
+
+            self.model.eval()
+            with torch.no_grad():
+                if isinstance(self.model.preproc.transition_system, SpiderTransitionSystem):
+                    # Orig data only used with SpiderTransitionSystem
+                    assert len(orig_data) == len(preproc_data)
+                inferred_lines = list(
+                    self._inner_infer(
+                        model=self.model,
+                        orig_data=orig_data,
+                        preproc_data=preproc_data,
+                        nproc=self.config["train"]["eval_nproc"],
+                        beam_size=self.config["train"]["eval_beam_size"],
+                        decode_max_time_step=self.config["train"][
+                            "eval_decode_max_time_step"
+                        ],
+                    )
+                )
+            self.model.train()
+
+            with open(f"{modeldir}/output-{last_step}-{name}", "w") as output_dst:
+                for line in inferred_lines:
+                    output_dst.write(line)
+
+            if isinstance(self.model.preproc.transition_system, SpiderTransitionSystem):
+                eval_results[name] = evaluate_default(orig_data, load_from_lines(inferred_lines))
+            else:
+                raise NotImplementedError
+
+        return eval_results
 
     @classmethod
     def _inner_infer(
-        cls, model, orig_data, preproc_data, nproc, beam_size, decode_max_time_step
+            cls, model, orig_data, preproc_data, nproc, beam_size, decode_max_time_step
     ):
         if torch.cuda.is_available():
             cp = parallelizer.CUDAParallelizer(nproc)
@@ -535,14 +594,36 @@ class Trainer:
 
 
 def main(
-    args=None, logdir_suffix: List[str] = None, trainer_class: Type[Trainer] = Trainer
+        args=None, logdir_suffix: List[str] = None, trainer_class: Type[Trainer] = Trainer
 ):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--local_rank", type=int, default=os.environ.get("LOCAL_RANK", 0),
-                        help="Local rank. Necessary for using the torch.distributed.launch utility.")
     parser.add_argument("--logdir", required=True)
     parser.add_argument("--config", required=True)
     parser.add_argument("--config-args")
+    parser.add_argument(
+        "--preprocess-only",
+        default=False,
+        action="store_true",
+        help="If True, do preprocessing only.",
+    )
+    parser.add_argument(
+        "--force-preprocess",
+        default=False,
+        action="store_true",
+        help="If True, force doing preprocessing even if exists.",
+    )
+    parser.add_argument(
+        "--force-train",
+        default=False,
+        action="store_true",
+        help="If True, force doing training even if the model exists.",
+    )
+    parser.add_argument(
+        "--train-sample-ratio",
+        type=int,
+        default=0,
+        help="if specified, sample this ratio (in percentage) from the training data",
+    )
     args = parser.parse_args(args)
 
     if args.config_args:
@@ -558,6 +639,14 @@ def main(
     if "model_name" in config:
         args.logdir = os.path.join(args.logdir, config["model_name"])
 
+    if args.force_train:
+        try:
+            logdir_path = pathlib.Path(args.logdir)
+            shutil.rmtree(logdir_path, ignore_errors=True)
+            os.makedirs(logdir_path, exist_ok=True)
+        except OSError as e:
+            print("Error: %s : %s" % (args.logdir, e.strerror))
+
     # Initialize the logger
     reopen_to_flush = config.get("log", {}).get("reopen_to_flush")
     logger = Logger(os.path.join(args.logdir, "log.txt"), reopen_to_flush)
@@ -567,19 +656,31 @@ def main(
     logger.log(f"Overwriting preproc save_path with: {preproc_data_path}")
     config['model']['preproc']['save_path'] = preproc_data_path
 
-    if os.path.exists(preproc_data_path):
+    if args.train_sample_ratio:
+        config['data']['train_sample_ratio'] = int(args.train_sample_ratio)
+
+    if os.path.exists(preproc_data_path) and not args.force_preprocess:
         logger.log("Skip preprocessing..")
     else:
-        logger.log("Running preprocessing...")
-        sections = config["data"].keys()
-        keep_vocab = False
+        logger.log("Run preprocessing...")
+        # if isinstance(config["data"], list):
+        #     dataset = config["data"][0]
+        # else:
+        #     dataset = config["data"]
+        # sections = [key for key, v in dataset.items() if isinstance(v, dict)]
+        # Here, we fixed the section list.
+        sections = ['train', 'val', 'test']
         preprocessor = Preprocessor(config)
-        preprocessor.preprocess(sections, keep_vocab)
+        preprocessor.preprocess(sections=sections,
+                                keep_vocab=config['model']['preproc'].get('keep_vocab', False))
 
-    config["dist"]["local_rank"] = args.local_rank
-    # Construct trainer and do training
-    trainer = trainer_class(logger, config)
-    trainer.train(modeldir=args.logdir)
+    if args.preprocess_only:
+        print("Done preprocessing. No further training.")
+    else:
+        # Construct trainer and do training
+        logger.log("Start training...")
+        trainer = trainer_class(logger, config)
+        trainer.train(modeldir=args.logdir)
 
 
 if __name__ == "__main__":

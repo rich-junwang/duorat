@@ -38,7 +38,6 @@ from tqdm import tqdm
 # Maximum number of candidates we should consider
 MAX_CANDIDATE = 20
 
-
 # These are substrings of exceptions from sqlite3 that indicate certain classes
 # of schema and syntax errors.
 SCHEMA_INCOHERENCE_STRINGS = {
@@ -53,152 +52,153 @@ SYNTAX_INCORRECTNESS_STRINGS = {
 }
 DECODING_ERROR_STRING = "could not decode to utf-8 column"
 
-def normalize_sql_str(string):
-  """Normalizes the format of a SQL string for string comparison."""
-  string = string.lower()
-  while '  ' in string:
-    string = string.replace('  ', ' ')
-  string = string.strip()
-  string = string.replace('( ', '(').replace(' )', ')')
-  string = string.replace(' ;', ';')
-  string = string.replace('"', '\'')
 
-  if ';' not in string:
-    string += ';'
-  return string
+def normalize_sql_str(string):
+    """Normalizes the format of a SQL string for string comparison."""
+    string = string.lower()
+    while '  ' in string:
+        string = string.replace('  ', ' ')
+    string = string.strip()
+    string = string.replace('( ', '(').replace(' )', ')')
+    string = string.replace(' ;', ';')
+    string = string.replace('"', '\'')
+
+    if ';' not in string:
+        string += ';'
+    return string
 
 
 def string_acc(s1, s2):
-  """Computes string accuracy between two SQL queries."""
-  return normalize_sql_str(s1) == normalize_sql_str(s2)
+    """Computes string accuracy between two SQL queries."""
+    return normalize_sql_str(s1) == normalize_sql_str(s2)
 
 
 def result_table_to_string(table):
-  """Converts a resulting SQL table to a human-readable string."""
-  string_val = '\t' + '\n\t'.join(
-      [str(row) for row in table[:min(len(table), 5)]]) + '\n'
-  if len(table) > 5:
-    string_val += '... and %d more rows.\n' % (len(table) - 5)
-  return string_val
+    """Converts a resulting SQL table to a human-readable string."""
+    string_val = '\t' + '\n\t'.join(
+        [str(row) for row in table[:min(len(table), 5)]]) + '\n'
+    if len(table) > 5:
+        string_val += '... and %d more rows.\n' % (len(table) - 5)
+    return string_val
 
 
 def find_used_entities_in_string(query, columns, tables):
-  """Heuristically finds schema entities included in a SQL query."""
-  used_columns = set()
-  used_tables = set()
+    """Heuristically finds schema entities included in a SQL query."""
+    used_columns = set()
+    used_tables = set()
 
-  nopunct_query = query.replace('.', ' ').replace('(', ' ').replace(')', ' ')
+    nopunct_query = query.replace('.', ' ').replace('(', ' ').replace(')', ' ')
 
-  for token in nopunct_query.split(' '):
-    if token.lower() in columns:
-      used_columns.add(token.lower())
-    if token.lower() in tables:
-      used_tables.add(token.lower())
-  return used_columns, used_tables
+    for token in nopunct_query.split(' '):
+        if token.lower() in columns:
+            used_columns.add(token.lower())
+        if token.lower() in tables:
+            used_tables.add(token.lower())
+    return used_columns, used_tables
 
 
 def compute_f1(precision, recall):
-  if precision + recall > 0.:
-    return 2 * precision * recall / (precision + recall)
-  else:
-    return 0.
+    if precision + recall > 0.:
+        return 2 * precision * recall / (precision + recall)
+    else:
+        return 0.
 
 
 def compute_set_f1(pred_set, gold_set):
-  """Computes F1 of items given two sets of items."""
-  prec = 1.
-  if pred_set:
-    prec = float(len(pred_set & gold_set)) / len(pred_set)
+    """Computes F1 of items given two sets of items."""
+    prec = 1.
+    if pred_set:
+        prec = float(len(pred_set & gold_set)) / len(pred_set)
 
-  rec = 1.
-  if gold_set:
-    rec = float(len(pred_set & gold_set)) / len(gold_set)
-  return compute_f1(prec, rec)
+    rec = 1.
+    if gold_set:
+        rec = float(len(pred_set & gold_set)) / len(gold_set)
+    return compute_f1(prec, rec)
 
 
 def col_tab_f1(schema, gold_query, predicted_query):
-  """Computes the F1 of tables and columns mentioned in the two queries."""
+    """Computes the F1 of tables and columns mentioned in the two queries."""
 
-  # Get the schema entities.
-  db_columns = set()
-  db_tables = set()
-  for name, cols in schema.items():
-    for col in cols:
-      db_columns.add(col['field name'].lower())
-    db_tables.add(name.lower())
+    # Get the schema entities.
+    db_columns = set()
+    db_tables = set()
+    for name, cols in schema.items():
+        for col in cols:
+            db_columns.add(col['field name'].lower())
+        db_tables.add(name.lower())
 
-  # Heuristically find the entities used in the gold and predicted queries.
-  pred_columns, pred_tables = find_used_entities_in_string(
-      predicted_query, db_columns, db_tables)
-  gold_columns, gold_tables = find_used_entities_in_string(
-      gold_query, db_columns, db_tables)
+    # Heuristically find the entities used in the gold and predicted queries.
+    pred_columns, pred_tables = find_used_entities_in_string(
+        predicted_query, db_columns, db_tables)
+    gold_columns, gold_tables = find_used_entities_in_string(
+        gold_query, db_columns, db_tables)
 
-  # Compute and return column and table F1.
-  return (compute_set_f1(pred_columns,
-                         gold_columns), compute_set_f1(pred_tables,
-                                                       gold_tables))
+    # Compute and return column and table F1.
+    return (compute_set_f1(pred_columns,
+                           gold_columns), compute_set_f1(pred_tables,
+                                                         gold_tables))
 
 
 def _convert_to_unicode_string(value):
-  if isinstance(value, int) or isinstance(value, float):
-    return str(value)
-  elif isinstance(value, str):
-    return value
-  elif value is None:
-    return 'None'
-  else:
-    raise ValueError()
+    if isinstance(value, int) or isinstance(value, float):
+        return str(value)
+    elif isinstance(value, str):
+        return value
+    elif value is None:
+        return 'None'
+    else:
+        raise ValueError()
 
 
 def try_executing_query(prediction, cursor, case_sensitive=True, verbose=False):
-  """Attempts to execute a SQL query against a database given a cursor."""
-  exception_str = None
+    """Attempts to execute a SQL query against a database given a cursor."""
+    exception_str = None
 
-  prediction_str = prediction[:]
-  prediction_str = prediction_str.replace(';', '').strip()
-  print('Current prediction:' + prediction_str)
+    prediction_str = prediction[:]
+    prediction_str = prediction_str.replace(';', '').strip()
+    print('Current prediction:' + prediction_str)
 
-  try:
-    if not case_sensitive:
-      new_prediction = ''
-      last_quote = ''
-      for char in prediction:
-        new_prediction += char
-        if char in {'"', '\''} and not last_quote:
-          last_quote = char
-        elif char == last_quote:
-          last_quote = ''
-          new_prediction += ' COLLATE NOCASE'
-      prediction = new_prediction
+    try:
+        if not case_sensitive:
+            new_prediction = ''
+            last_quote = ''
+            for char in prediction:
+                new_prediction += char
+                if char in {'"', '\''} and not last_quote:
+                    last_quote = char
+                elif char == last_quote:
+                    last_quote = ''
+                    new_prediction += ' COLLATE NOCASE'
+            prediction = new_prediction
 
-      if verbose:
-        print('Executing case-insensitive query:')
-        print(new_prediction)
+            if verbose:
+                print('Executing case-insensitive query:')
+                print(new_prediction)
 
-    @timeout_decorator.timeout(seconds=TIMEOUT, use_signals=False)
-    def timeout_execute(cursor, prediction):
-        cursor.execute(prediction)
-        pred_results = cursor.fetchall()
-        pred_results = [list(result) for result in pred_results]
-        return pred_results
+        @timeout_decorator.timeout(seconds=TIMEOUT, use_signals=False)
+        def timeout_execute(cursor, prediction):
+            cursor.execute(prediction)
+            pred_results = cursor.fetchall()
+            pred_results = [list(result) for result in pred_results]
+            return pred_results
 
-    pred_results = timeout_execute(cursor, prediction)
-  except timeout_decorator.timeout_decorator.TimeoutError:
-    print('!time out!')
-    pred_results = []
-    exception_str = 'timeout'
-  except (sqlite3.Warning, sqlite3.Error, sqlite3.DatabaseError,
-          sqlite3.IntegrityError, sqlite3.ProgrammingError,
-          sqlite3.OperationalError, sqlite3.NotSupportedError) as e:
-    exception_str = str(e).lower()
-    pred_results = []
+        pred_results = timeout_execute(cursor, prediction)
+    except timeout_decorator.timeout_decorator.TimeoutError:
+        print('!time out!')
+        pred_results = []
+        exception_str = 'timeout'
+    except (sqlite3.Warning, sqlite3.Error, sqlite3.DatabaseError,
+            sqlite3.IntegrityError, sqlite3.ProgrammingError,
+            sqlite3.OperationalError, sqlite3.NotSupportedError) as e:
+        exception_str = str(e).lower()
+        pred_results = []
 
-  return pred_results, exception_str
+    return pred_results, exception_str
 
 
 def execute_prediction(prediction, empty_table_cursor, cursor, case_sensitive,
                        verbose):
-  """Executes a single example's prediction(s).
+    """Executes a single example's prediction(s).
 
   If more than one prediction is available, the most likely executable
   prediction is used as the "official" prediction.
@@ -218,72 +218,72 @@ def execute_prediction(prediction, empty_table_cursor, cursor, case_sensitive,
     and any exception string associated with executing this query.
   """
 
-  # Go through predictions in order of probability and test their executability
-  # until you get an executable prediction. If you don't find one, just
-  # "predict" the most probable one.
-  paired_preds_and_scores = zip(prediction['predictions'], prediction['scores'])
-  sorted_by_scores = sorted(
-      paired_preds_and_scores, key=lambda x: x[1], reverse=True)
+    # Go through predictions in order of probability and test their executability
+    # until you get an executable prediction. If you don't find one, just
+    # "predict" the most probable one.
+    paired_preds_and_scores = zip(prediction['predictions'], prediction['scores'])
+    sorted_by_scores = sorted(
+        paired_preds_and_scores, key=lambda x: x[1], reverse=True)
 
-  best_prediction = None
-  pred_results = None
-  exception_str = None
+    best_prediction = None
+    pred_results = None
+    exception_str = None
 
-  if len(sorted_by_scores) > MAX_CANDIDATE:
-    sorted_by_scores = sorted_by_scores[:MAX_CANDIDATE]
-  if len(sorted_by_scores) == 1:
-    pred = sorted_by_scores[0][0]
-    if verbose:
-      print('Single query candidate, execute on the actual database:\n\t' + pred)
-    pred_results, exception_str = try_executing_query(
-      pred, cursor, case_sensitive, verbose)
-    return pred, pred_results, exception_str
-
-  for i, (pred, _) in enumerate(sorted_by_scores):
-    # Try predicting
-    if verbose:
-      print('Trying to execute query:\n\t' + pred)
-      print('... on empty database')
-    temp_exception_str = try_executing_query(pred, empty_table_cursor,
-                                             case_sensitive, verbose)[1]
-
-    if temp_exception_str:
-      if i == 0:
-        # By default, set the prediction to the first (highest-scoring)
-        # one.
-        best_prediction = pred
-
-        # Get the actual results
+    if len(sorted_by_scores) > MAX_CANDIDATE:
+        sorted_by_scores = sorted_by_scores[:MAX_CANDIDATE]
+    if len(sorted_by_scores) == 1:
+        pred = sorted_by_scores[0][0]
         if verbose:
-          print('... on actual database')
+            print('Single query candidate, execute on the actual database:\n\t' + pred)
         pred_results, exception_str = try_executing_query(
             pred, cursor, case_sensitive, verbose)
-      if exception_str == 'timeout':
-        # Technically, this query didn't have a syntax problem, so
-        # continue and set this as the best prediction.
-        best_prediction = pred
+        return pred, pred_results, exception_str
 
+    for i, (pred, _) in enumerate(sorted_by_scores):
+        # Try predicting
         if verbose:
-          print('... on actual database')
-        pred_results, exception_str = try_executing_query(
-            pred, cursor, case_sensitive, verbose)
-        break
-    else:
-      best_prediction = pred
-      exception_str = None
+            print('Trying to execute query:\n\t' + pred)
+            print('... on empty database')
+        temp_exception_str = try_executing_query(pred, empty_table_cursor,
+                                                 case_sensitive, verbose)[1]
 
-      if verbose:
-        print('No exception... on actual database')
-      pred_results = try_executing_query(pred, cursor, case_sensitive,
-                                         verbose)[0]
-      break
+        if temp_exception_str:
+            if i == 0:
+                # By default, set the prediction to the first (highest-scoring)
+                # one.
+                best_prediction = pred
 
-  return best_prediction, pred_results, exception_str
+                # Get the actual results
+                if verbose:
+                    print('... on actual database')
+                pred_results, exception_str = try_executing_query(
+                    pred, cursor, case_sensitive, verbose)
+            if exception_str == 'timeout':
+                # Technically, this query didn't have a syntax problem, so
+                # continue and set this as the best prediction.
+                best_prediction = pred
+
+                if verbose:
+                    print('... on actual database')
+                pred_results, exception_str = try_executing_query(
+                    pred, cursor, case_sensitive, verbose)
+                break
+        else:
+            best_prediction = pred
+            exception_str = None
+
+            if verbose:
+                print('No exception... on actual database')
+            pred_results = try_executing_query(pred, cursor, case_sensitive,
+                                               verbose)[0]
+            break
+
+    return best_prediction, pred_results, exception_str
 
 
 def execute_predictions(predictions, cache_dict, ofile, case_sensitive, verbose,
                         update_cache):
-  """Executes predicted/gold queries and computes performance.
+    """Executes predicted/gold queries and computes performance.
 
   Writes results to ofile.
 
@@ -298,301 +298,301 @@ def execute_predictions(predictions, cache_dict, ofile, case_sensitive, verbose,
       debugging).
     update_cache: Whether to execute and cache gold queries.
   """
-  # Keeps tracks of metrics throughout all of the evaluation.
-  exec_results_same = list()
-  string_same = list()
+    # Keeps tracks of metrics throughout all of the evaluation.
+    exec_results_same = list()
+    string_same = list()
 
-  precision = list()
-  recall = list()
+    precision = list()
+    recall = list()
 
-  column_f1s = list()
-  table_f1s = list()
+    column_f1s = list()
+    table_f1s = list()
 
-  conversion_errors = 0
+    conversion_errors = 0
 
-  schema_errors = 0
-  syntax_errors = 0
-  timeouts = 0
+    schema_errors = 0
+    syntax_errors = 0
+    timeouts = 0
 
-  gold_error = 0
+    gold_error = 0
 
-  i = 0
+    i = 0
 
-  predictions_iterator = tqdm
-  if verbose:
-    # Don't use TQDM if verbose: it might mess up the verbose messages
-    predictions_iterator = lambda x: x
-
-  for prediction in predictions_iterator(predictions):
-    # Attempt to connect to the database for executing.
-    try:
-      conn = sqlite3.connect(prediction['database_path'])
-      conn.text_factory = str
-    except sqlite3.OperationalError as e:
-      print(e)
-      print(prediction['database_path'])
-      exit()
-
-    empty_path = prediction['empty_database_path']
-    try:
-      empty_conn = sqlite3.connect(empty_path)
-      empty_conn.text_factory = str
-    except sqlite3.OperationalError as e:
-      print(e)
-      print(empty_path)
-      exit()
-
-    empty_cursor = empty_conn.cursor()
-    cursor = conn.cursor()
-
-    ofile.write('Example #' + str(i) + '\n')
-    printable_utterance = u''.join(
-        prediction['utterance']).strip()
-    ofile.write(printable_utterance + '\n')
-
+    predictions_iterator = tqdm
     if verbose:
-      print('Finding the highest-rated prediction for utterance:\n\t' +
-            printable_utterance)
+        # Don't use TQDM if verbose: it might mess up the verbose messages
+        predictions_iterator = lambda x: x
 
-    best_prediction, pred_results, exception_str = execute_prediction(
-        prediction, empty_cursor, cursor, case_sensitive, verbose)
+    for prediction in predictions_iterator(predictions):
+        # Attempt to connect to the database for executing.
+        try:
+            conn = sqlite3.connect(prediction['database_path'])
+            conn.text_factory = str
+        except sqlite3.OperationalError as e:
+            print(e)
+            print(prediction['database_path'])
+            exit()
 
-    ofile.write('Predicted query:\n')
-    if best_prediction:
-      ofile.write('\t' + u''.join(best_prediction).strip() +
-                  '\n')
-    else:
-      ofile.write('ERROR: Cannot write prediction %r\n' % best_prediction)
+        empty_path = prediction['empty_database_path']
+        try:
+            empty_conn = sqlite3.connect(empty_path)
+            empty_conn.text_factory = str
+        except sqlite3.OperationalError as e:
+            print(e)
+            print(empty_path)
+            exit()
 
-    # If it didn't execute correctly, check why.
-    if exception_str:
-      ofile.write(exception_str + '\n')
+        empty_cursor = empty_conn.cursor()
+        cursor = conn.cursor()
 
-      found_error = False
-      for substring in SCHEMA_INCOHERENCE_STRINGS:
-        if substring in exception_str.lower():
-          schema_errors += 1
-          found_error = True
-          break
+        ofile.write('Example #' + str(i) + '\n')
+        printable_utterance = u''.join(
+            prediction['utterance']).strip()
+        ofile.write(printable_utterance + '\n')
 
-      if not found_error:
-        for substring in SYNTAX_INCORRECTNESS_STRINGS:
-          if substring in exception_str.lower():
-            syntax_errors += 1
-            found_error = True
-            break
+        if verbose:
+            print('Finding the highest-rated prediction for utterance:\n\t' +
+                  printable_utterance)
 
-      if not found_error and 'timeout' in exception_str:
-        ofile.write('Execution (predicted) took too long.\n')
-        found_error = True
-        timeouts += 1
+        best_prediction, pred_results, exception_str = execute_prediction(
+            prediction, empty_cursor, cursor, case_sensitive, verbose)
 
-      if not found_error and DECODING_ERROR_STRING in exception_str:
-        ofile.write('Corrupted database content')
-        found_error = True
-
-      # If the error type hasn't been identified, exit and report it.
-      if not found_error:
-        print(best_prediction)
-        print(exception_str)
-        exit(1)
-
-      # Predicted table should be empty for all of these cases.
-      pred_results = []
-
-    # Compare to gold and update metrics
-    gold_query = prediction['gold']
-
-    ofile.write('Gold query:\n')
-    ofile.write('\t' + u''.join(gold_query).strip() + '\n')
-
-    # Get the gold results
-    if cache_dict is None or gold_query not in cache_dict:
-      if cache_dict is None or printable_utterance not in cache_dict:
-        if update_cache:
-          if verbose:
-            print('Trying to execute the gold query:\n\t' + gold_query)
-          gold_results, gold_exception_str = try_executing_query(
-              gold_query, cursor, case_sensitive, verbose)
-
-          if gold_exception_str:
-            print("gold exception:", gold_exception_str)
-            gold_error += 1
-            gold_results = []
-          elif cache_dict is not None:
-            cache_dict[u''.join(gold_query)] = gold_results
+        ofile.write('Predicted query:\n')
+        if best_prediction:
+            ofile.write('\t' + u''.join(best_prediction).strip() +
+                        '\n')
         else:
-          print(gold_query)
-          print(printable_utterance)
-          raise ValueError('Cache miss!')
+            ofile.write('ERROR: Cannot write prediction %r\n' % best_prediction)
 
-      else:
-        gold_results = cache_dict[cache_dict[printable_utterance]]
-    else:
-      gold_results = cache_dict[gold_query]
+        # If it didn't execute correctly, check why.
+        if exception_str:
+            ofile.write(exception_str + '\n')
 
-    if best_prediction:
-      string_same.append(string_acc(gold_query, best_prediction))
+            found_error = False
+            for substring in SCHEMA_INCOHERENCE_STRINGS:
+                if substring in exception_str.lower():
+                    schema_errors += 1
+                    found_error = True
+                    break
 
-      if 'order by' in gold_query:
-        results_equivalent = pred_results == gold_results
-      else:
-        pred_set = set()
-        gold_set = set()
-        for pred in pred_results:
-          if isinstance(pred, list):
-            pred_set.add(u' '.join(
-                [_convert_to_unicode_string(item) for item in pred]))
-          else:
-            pred_set.add(pred)
-        for gold in gold_results:
-          if isinstance(gold, list):
-            gold_set.add(u' '.join(
-                [_convert_to_unicode_string(item) for item in gold]))
-          else:
-            gold_set.add(gold)
+            if not found_error:
+                for substring in SYNTAX_INCORRECTNESS_STRINGS:
+                    if substring in exception_str.lower():
+                        syntax_errors += 1
+                        found_error = True
+                        break
 
-        results_equivalent = pred_set == gold_set
+            if not found_error and 'timeout' in exception_str:
+                ofile.write('Execution (predicted) took too long.\n')
+                found_error = True
+                timeouts += 1
 
-    else:
-      string_same.append(0.)
+            if not found_error and DECODING_ERROR_STRING in exception_str:
+                ofile.write('Corrupted database content')
+                found_error = True
 
-      conversion_errors += 1
+            # If the error type hasn't been identified, exit and report it.
+            if not found_error:
+                print(best_prediction)
+                print(exception_str)
+                exit(1)
 
-      # Only consider correct if the gold table was empty.
-      results_equivalent = gold_results == list()
+            # Predicted table should be empty for all of these cases.
+            pred_results = []
 
-    exec_results_same.append(int(results_equivalent))
-    ofile.write('Execution was correct? ' + str(results_equivalent) + '\n')
+        # Compare to gold and update metrics
+        gold_query = prediction['gold']
 
-    # Add some debugging information about the tables, and compute the
-    # precisions.
-    if pred_results:
-      if not results_equivalent:
-        ofile.write('Predicted table:\n')
-        ofile.write(result_table_to_string(pred_results))
+        ofile.write('Gold query:\n')
+        ofile.write('\t' + u''.join(gold_query).strip() + '\n')
 
-      precision.append(int(results_equivalent))
-    elif best_prediction is None or not results_equivalent:
-      ofile.write('Predicted table was EMPTY!\n')
+        # Get the gold results
+        if cache_dict is None or gold_query not in cache_dict:
+            if cache_dict is None or printable_utterance not in cache_dict:
+                if update_cache:
+                    if verbose:
+                        print('Trying to execute the gold query:\n\t' + gold_query)
+                    gold_results, gold_exception_str = try_executing_query(
+                        gold_query, cursor, case_sensitive, verbose)
 
-    if gold_results:
-      ofile.write('Gold table:\n')
-      ofile.write(result_table_to_string(gold_results))
+                    if gold_exception_str:
+                        print("gold exception:", gold_exception_str)
+                        gold_error += 1
+                        gold_results = []
+                    elif cache_dict is not None:
+                        cache_dict[u''.join(gold_query)] = gold_results
+                else:
+                    print(gold_query)
+                    print(printable_utterance)
+                    raise ValueError('Cache miss!')
 
-      recall.append(int(results_equivalent))
-    else:
-      ofile.write('Gold table was EMPTY!\n')
+            else:
+                gold_results = cache_dict[cache_dict[printable_utterance]]
+        else:
+            gold_results = cache_dict[gold_query]
 
-    ofile.write('\n')
-    ofile.flush()
+        if best_prediction:
+            string_same.append(string_acc(gold_query, best_prediction))
 
-    conn.close()
-    empty_conn.close()
+            if 'order by' in gold_query:
+                results_equivalent = pred_results == gold_results
+            else:
+                pred_set = set()
+                gold_set = set()
+                for pred in pred_results:
+                    if isinstance(pred, list):
+                        pred_set.add(u' '.join(
+                            [_convert_to_unicode_string(item) for item in pred]))
+                    else:
+                        pred_set.add(pred)
+                for gold in gold_results:
+                    if isinstance(gold, list):
+                        gold_set.add(u' '.join(
+                            [_convert_to_unicode_string(item) for item in gold]))
+                    else:
+                        gold_set.add(gold)
 
-    i += 1
+                results_equivalent = pred_set == gold_set
 
-  # Write the overall metrics to the file.
-  num_empty_pred = len(precision)
-  num_empty_gold = len(recall)
+        else:
+            string_same.append(0.)
 
-  # precision = np.mean(np.array(precision))
-  # recall = np.mean(np.array(recall))
+            conversion_errors += 1
 
-  # execution_f1 = compute_f1(precision, recall)
+            # Only consider correct if the gold table was empty.
+            results_equivalent = gold_results == list()
 
-  ofile.write('String accuracy: ' +
-              '{0:.2f}'.format(100. * np.mean(np.array(string_same))) + '\n')
-  ofile.write('Accuracy: ' +
-              '{0:.2f}'.format(100. * np.mean(np.array(exec_results_same))) +
-              '\n')
-  # ofile.write('Precision: ' + '{0:.2f}'.format(100. * precision) + ' ; ' +
-  #             str(num_empty_pred) + ' nonempty predicted tables' + '\n')
-  # ofile.write('Recall: ' + '{0:.2f}'.format(100. * recall) + ' ; ' +
-  #             str(num_empty_gold) + ' nonempty gold tables' + '\n')
-  # ofile.write('Execution F1: ' + '{0:.2f}'.format(100. * execution_f1) + '\n')
-  ofile.write('Timeout: ' +
-              '{0:.2f}'.format(timeouts * 100. / len(predictions)) + '\n')
-  ofile.write('Gold did not execute: ' +
-              '{0:.2f}'.format(gold_error * 100. / len(predictions)) + '\n')
-  ofile.write('Schema errors: ' +
-              '{0:.2f}'.format((schema_errors) * 100. / len(predictions)) +
-              '\n')
-  ofile.write('Syntax errors:  ' +
-              '{0:.2f}'.format((syntax_errors) * 100. / len(predictions)) +
-              '\n')
-  ofile.write('Conversion errors: ' +
-              '{0:.2f}'.format((conversion_errors * 100.) / len(predictions)) +
-              '\n')
+        exec_results_same.append(int(results_equivalent))
+        ofile.write('Execution was correct? ' + str(results_equivalent) + '\n')
+
+        # Add some debugging information about the tables, and compute the
+        # precisions.
+        if pred_results:
+            if not results_equivalent:
+                ofile.write('Predicted table:\n')
+                ofile.write(result_table_to_string(pred_results))
+
+            precision.append(int(results_equivalent))
+        elif best_prediction is None or not results_equivalent:
+            ofile.write('Predicted table was EMPTY!\n')
+
+        if gold_results:
+            ofile.write('Gold table:\n')
+            ofile.write(result_table_to_string(gold_results))
+
+            recall.append(int(results_equivalent))
+        else:
+            ofile.write('Gold table was EMPTY!\n')
+
+        ofile.write('\n')
+        ofile.flush()
+
+        conn.close()
+        empty_conn.close()
+
+        i += 1
+
+    # Write the overall metrics to the file.
+    num_empty_pred = len(precision)
+    num_empty_gold = len(recall)
+
+    # precision = np.mean(np.array(precision))
+    # recall = np.mean(np.array(recall))
+
+    # execution_f1 = compute_f1(precision, recall)
+
+    ofile.write('String accuracy: ' +
+                '{0:.2f}'.format(100. * np.mean(np.array(string_same))) + '\n')
+    ofile.write('Accuracy: ' +
+                '{0:.2f}'.format(100. * np.mean(np.array(exec_results_same))) +
+                '\n')
+    # ofile.write('Precision: ' + '{0:.2f}'.format(100. * precision) + ' ; ' +
+    #             str(num_empty_pred) + ' nonempty predicted tables' + '\n')
+    # ofile.write('Recall: ' + '{0:.2f}'.format(100. * recall) + ' ; ' +
+    #             str(num_empty_gold) + ' nonempty gold tables' + '\n')
+    # ofile.write('Execution F1: ' + '{0:.2f}'.format(100. * execution_f1) + '\n')
+    ofile.write('Timeout: ' +
+                '{0:.2f}'.format(timeouts * 100. / len(predictions)) + '\n')
+    ofile.write('Gold did not execute: ' +
+                '{0:.2f}'.format(gold_error * 100. / len(predictions)) + '\n')
+    ofile.write('Schema errors: ' +
+                '{0:.2f}'.format((schema_errors) * 100. / len(predictions)) +
+                '\n')
+    ofile.write('Syntax errors:  ' +
+                '{0:.2f}'.format((syntax_errors) * 100. / len(predictions)) +
+                '\n')
+    ofile.write('Conversion errors: ' +
+                '{0:.2f}'.format((conversion_errors * 100.) / len(predictions)) +
+                '\n')
 
 
 def main(predictions_filepath, output_filepath, cache_filepath, verbose,
          update_cache, case_sensitive):
-  # Load the predictions filepath.
-  with open(predictions_filepath) as infile:
-    predictions = json.load(infile)
-  print('Loaded %d predictions.' % len(predictions))
+    # Load the predictions filepath.
+    with open(predictions_filepath) as infile:
+        predictions = json.load(infile)
+    print('Loaded %d predictions.' % len(predictions))
 
-  # Load or create the cache dictionary mapping from gold queries to resulting
-  # tables.
-  cache_dict = None
+    # Load or create the cache dictionary mapping from gold queries to resulting
+    # tables.
+    cache_dict = None
 
-  # Only instantiate the cache dict if using Spider.
-  print('cache path: ' + cache_filepath)
+    # Only instantiate the cache dict if using Spider.
+    print('cache path: ' + cache_filepath)
 
-  basefilename = os.path.basename(predictions_filepath).lower()
+    basefilename = os.path.basename(predictions_filepath).lower()
 
-  if 'spider' not in basefilename:
-    cache_dict = dict()
-    if os.path.exists(cache_filepath):
-      print('Loading cache from %s' % cache_filepath)
-      with open(cache_filepath) as infile:
-        cache_dict = json.load(infile)
-      print('Loaded %d cached queries' % len(cache_dict))
+    if 'spider' not in basefilename:
+        cache_dict = dict()
+        if os.path.exists(cache_filepath):
+            print('Loading cache from %s' % cache_filepath)
+            with open(cache_filepath) as infile:
+                cache_dict = json.load(infile)
+            print('Loaded %d cached queries' % len(cache_dict))
 
-  # Create the text file that results will be written to.
-  with open(output_filepath, 'w') as ofile:
-    execute_predictions(predictions, cache_dict, ofile,
-                        case_sensitive, verbose, update_cache)
+    # Create the text file that results will be written to.
+    with open(output_filepath, 'w') as ofile:
+        execute_predictions(predictions, cache_dict, ofile,
+                            case_sensitive, verbose, update_cache)
 
-  if 'spider' not in basefilename:
-    try:
-      cache_str = json.dumps(cache_dict)
-      with open(cache_filepath, 'w') as ofile:
-        ofile.write(cache_str)
-    except UnicodeDecodeError as e:
-      print('Could not save the cache dict. Exception:')
-      print(e)
+    if 'spider' not in basefilename:
+        try:
+            cache_str = json.dumps(cache_dict)
+            with open(cache_filepath, 'w') as ofile:
+                ofile.write(cache_str)
+        except UnicodeDecodeError as e:
+            print('Could not save the cache dict. Exception:')
+            print(e)
 
 
 if __name__ == '__main__':
-  parser = argparse.ArgumentParser()
-  parser.add_argument(
-      '--predictions_filepath',
-      type=str,
-      help='Where the predictions JSON file is located.')
-  parser.add_argument(
-      '--output_filepath', type=str, help='Where to write the results.')
-  parser.add_argument(
-      '--cache_filepath', type=str, help='A cache of the gold tables.')
-  parser.add_argument(
-      '--verbose',
-      type=bool,
-      help='If set to True, evaluation will be verbose.')
-  parser.add_argument(
-      '--update_cache',
-      type=bool,
-      help='If set to True, will execute and cache gold queries.')
-  parser.add_argument(
-      '--collate_nocase',
-      type=bool,
-      help='If set to True, strings are collated in a case-insensitive way.')
-  parser.add_argument(
-      '--timeout', type=int, default=180)
-  args = parser.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--predictions_filepath',
+        type=str,
+        help='Where the predictions JSON file is located.')
+    parser.add_argument(
+        '--output_filepath', type=str, help='Where to write the results.')
+    parser.add_argument(
+        '--cache_filepath', type=str, help='A cache of the gold tables.')
+    parser.add_argument(
+        '--verbose',
+        type=bool,
+        help='If set to True, evaluation will be verbose.')
+    parser.add_argument(
+        '--update_cache',
+        type=bool,
+        help='If set to True, will execute and cache gold queries.')
+    parser.add_argument(
+        '--collate_nocase',
+        type=bool,
+        help='If set to True, strings are collated in a case-insensitive way.')
+    parser.add_argument(
+        '--timeout', type=int, default=180)
+    args = parser.parse_args()
 
-  global TIMEOUT
-  TIMEOUT = args.timeout
+    global TIMEOUT
+    TIMEOUT = args.timeout
 
-  main(args.predictions_filepath, args.output_filepath, args.cache_filepath,
-       args.verbose, args.update_cache, not args.collate_nocase)
+    main(args.predictions_filepath, args.output_filepath, args.cache_filepath,
+         args.verbose, args.update_cache, not args.collate_nocase)

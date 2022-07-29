@@ -657,12 +657,12 @@ class SourceRelationsBuilder(object):
             )
             and match_tag.column_id == column_id
         )
-        if len(question_match_tags) == 1:
+        if len(question_match_tags) >= 1:
             question_match_tag = question_match_tags[0]
         elif len(question_match_tags) == 0:
             question_match_tag = None
-        else:
-            raise ValueError(f"Found more than 1 q-c matches: {question_match_tags}")
+        # else:
+        #     raise ValueError(f"Found more than 1 q-c matches: {question_match_tags}")
         if question_match_tag is not None:
             qc_match_relation = QCMatchRelation(
                 confidence=question_match_tag.confidence,

@@ -27,14 +27,43 @@ class Preprocessor:
 
     def preprocess(self, sections, keep_vocab):
         self.model_preproc.clear_items()
-        for section in sections:
-            data = registry.construct("dataset", self.config["data"][section])
-            for item in tqdm.tqdm(data, desc=section, dynamic_ncols=True):
-                to_add, validation_info = self.model_preproc.validate_item(
-                    item, section
-                )
-                if to_add:
-                    self.model_preproc.add_item(item, section, validation_info)
+
+        if isinstance(self.config["data"], list):
+            datasets = self.config["data"]
+        else:
+            datasets = [self.config["data"]]
+
+        for dataset in datasets:
+            if 'name' in dataset:
+                print(f"Processing the {dataset['name']} dataset...")
+            for section in sections:
+                if section not in dataset:
+                    continue
+
+                print(f"Section: '{section}' in the {dataset['name'] if 'name' in dataset else 'given'} dataset")
+
+                data = registry.construct("dataset",
+                                          dataset[section])  # SpiderDataset/SparcDataset/CoSQLDataset
+
+                sample_size = dataset.get(f'{section}_sample_size', None)
+                if section in 'train_sample_ratio' and 'train_sample_ratio' in dataset:
+                    sample_size = int(len(data) * float(dataset['train_sample_ratio'] / 100))
+                data.sample(sample_size=sample_size)
+
+                real_section = section
+                if 'name' in dataset:
+                    real_section = f"{dataset['name']}_{real_section}"
+
+                for i, item in enumerate(
+                        tqdm.tqdm(data, desc=real_section, dynamic_ncols=True)):  # SpiderItem/SparcItem
+
+                    item.type = dataset.get('type', 'original')
+
+                    to_add, validation_info = self.model_preproc.validate_item(
+                        item, real_section
+                    )
+                    if to_add:
+                        self.model_preproc.add_item(item, real_section, validation_info)
         if keep_vocab:
             self.model_preproc.save_examples()
         else:

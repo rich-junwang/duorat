@@ -66,14 +66,20 @@ def load_checkpoint(
             )
             path = os.path.join(model_dir, "model_checkpoint")
     else:
-        # Load last model
-        path = os.path.join(model_dir, "model_last_checkpoint")
-        # Backwards compatibility: load "model_checkpoint" if "model_last_checkpoint" is not available
-        if not os.path.exists(path):
+        if os.path.isfile(model_dir):
+            path = model_dir
             logger.warning(
-                f"{path} does not exist, loading model_checkpoint instead ..."
+                f"Loading model_checkpoint from specified file at {model_dir} ..."
             )
-            path = os.path.join(model_dir, "model_checkpoint")
+        else:
+            # Load last model
+            path = os.path.join(model_dir, "model_last_checkpoint")
+            # Backwards compatibility: load "model_checkpoint" if "model_last_checkpoint" is not available
+            if not os.path.exists(path):
+                logger.warning(
+                    f"{path} does not exist, loading model_checkpoint instead ..."
+                )
+                path = os.path.join(model_dir, "model_checkpoint")
 
     if os.path.exists(path):
         logger.info("Loading model from %s" % path)
@@ -83,22 +89,35 @@ def load_checkpoint(
             if key not in checkpoint["model"]:
                 logger.warning(f"missing key {key}: using random initialization")
                 checkpoint["model"][key] = old_state_dict[key]
+
         for key in list(checkpoint["model"].keys()):
             if key not in old_state_dict:
-                logger.warning(f"unexpected key {key}")
+                logger.warning(f"unexpected/unwanted key: {key}")
                 del checkpoint["model"][key]
+
         model.load_state_dict(checkpoint["model"])
         if optimizer is not None:
             optimizer.load_state_dict(checkpoint["optimizer"])
+
         return checkpoint.get("step", 0), checkpoint.get("best_validation_metric", 0)
+
     return 0, 0
 
 
-def load_and_map_checkpoint(model, model_dir, remap):
-    path = os.path.join(model_dir, "model_checkpoint")
-    print("Loading parameters %s from %s" % (remap.keys(), model_dir))
+def load_and_map_checkpoint(model, model_dir, filters):
+    path = os.path.join(model_dir, "model_best_checkpoint")
     checkpoint = torch.load(path)
     new_state_dict = model.state_dict()
+
+    remap = {}
+    for filter in filters:
+        for weight_name in new_state_dict.keys():
+            if filter in weight_name:
+                if weight_name in checkpoint["model"]:
+                    remap[weight_name] = weight_name
+
+    if len(remap) > 0:
+        print("Loading parameters %s from %s" % (remap.keys(), model_dir))
     for name, value in remap.items():
         # TODO: smarter mapping.
         new_state_dict[name] = checkpoint["model"][value]
@@ -156,7 +175,9 @@ class Saver(object):
            best_validation_metric: Best metric on the validation set so far
         """
         last_step, best_validation_metric = load_checkpoint(
-            self._model, self._optimizer, model_dir, load_best, map_location, step
+            self._model, self._optimizer, model_dir, load_best,
+            map_location=map_location,
+            step=step,
         )
         return last_step, best_validation_metric
 
@@ -178,13 +199,14 @@ class Saver(object):
             best_validation_metric,
         )
 
-    def restore_part(self, other_model_dir, remap):
+    def restore_part(self, other_model_dir, filters):
         """Restores part of the model from other directory.
 
         Useful to initialize part of the model with another pretrained model.
 
         Args:
             other_model_dir: Model directory to load from.
-            remap: dict, remapping current parameters to the other model's.
+            # remap: dict, remapping current parameters to the other model's.
+            filters: list, list of model weight filters
         """
-        load_and_map_checkpoint(self._model, other_model_dir, remap)
+        load_and_map_checkpoint(self._model, other_model_dir, filters)

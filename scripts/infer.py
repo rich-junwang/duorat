@@ -21,27 +21,26 @@
 # SOFTWARE.
 
 import argparse
-import itertools
 import functools
+import itertools
 import json
 import os
 import sys
+import traceback
 from typing import List
+import time
 
 import _jsonnet
 import torch
 import tqdm
-import traceback
 
 # noinspection PyUnresolvedReferences
 from duorat import models
-from duorat.asdl.lang.spider.spider_transition_system import SpiderTransitionSystem
-
-from duorat.utils import registry, optimizers
-from duorat.utils import saver as saver_mod
-from duorat.utils import parallelizer
-from duorat.utils.evaluation import find_any_config
 from duorat.api import ModelLoader
+from duorat.asdl.lang.spider.spider_transition_system import SpiderTransitionSystem
+from duorat.utils import parallelizer
+from duorat.utils import registry
+from duorat.utils.evaluation import find_any_config
 
 
 def maybe_slice(iterable, start, end):
@@ -54,40 +53,57 @@ class Inferer(ModelLoader):
 
     def infer(self, model, output_path, args):
         # 3. Get training data somewhere
-        output = open(output_path, "w")
-        orig_data = registry.construct("dataset", self.config["data"][args.section])
-        sliced_orig_data = maybe_slice(orig_data, args.start_offset, args.limit)
-        preproc_data = self.model_preproc.dataset(args.section)
-        sliced_preproc_data = maybe_slice(preproc_data, args.start_offset, args.limit)
+        if isinstance(self.config["data"], list):
+            datasets = self.config["data"]
+        else:
+            datasets = [self.config["data"]]
 
-        with torch.no_grad():
-            if args.mode == "infer":
-                # assert len(orig_data) == len(preproc_data)
-                self._inner_infer(
-                    model,
-                    args.beam_size,
-                    args.output_history,
-                    sliced_orig_data,
-                    sliced_preproc_data,
-                    output,
-                    args.nproc,
-                    args.decode_max_time_step,
-                )
-            elif args.mode == "debug":
-                self._debug(model, sliced_orig_data, output)
-            elif args.mode == "visualize_attention":
-                model.visualize_flag = True
-                model.decoder.visualize_flag = True
-                self._visualize_attention(
-                    model,
-                    args.beam_size,
-                    args.output_history,
-                    sliced_orig_data,
-                    args.res1,
-                    args.res2,
-                    args.res3,
-                    output,
-                )
+        for dataset in datasets:
+            if 'name' in dataset:
+                print(f"Inferring the {dataset['name']} dataset...")
+                name = dataset['name']
+                output = open(f"{output_path}.{name}", "w")
+            else:
+                print(f"Inferring the {args.section} section of given dataset...")
+                name = 'default'
+                output = open(output_path, "w")
+
+            orig_data = registry.construct("dataset", dataset[args.section])
+            sliced_orig_data = maybe_slice(orig_data, args.start_offset, args.limit)
+            if name == 'default':
+                preproc_data = self.model_preproc.dataset(args.section)
+            else:
+                preproc_data = self.model_preproc.dataset(f"{name}_{args.section}")
+            sliced_preproc_data = maybe_slice(preproc_data, args.start_offset, args.limit)
+
+            with torch.no_grad():
+                if args.mode == "infer":
+                    # assert len(orig_data) == len(preproc_data)
+                    self._inner_infer(
+                        model,
+                        args.beam_size,
+                        args.output_history,
+                        sliced_orig_data,
+                        sliced_preproc_data,
+                        output,
+                        args.nproc,
+                        args.decode_max_time_step,
+                    )
+                elif args.mode == "debug":
+                    self._debug(model, sliced_orig_data, output)
+                elif args.mode == "visualize_attention":
+                    model.visualize_flag = True
+                    model.decoder.visualize_flag = True
+                    self._visualize_attention(
+                        model,
+                        args.beam_size,
+                        args.output_history,
+                        sliced_orig_data,
+                        args.res1,
+                        args.res2,
+                        args.res3,
+                        output,
+                    )
 
     def _inner_infer(
         self,
@@ -280,12 +296,18 @@ def main(args=None, logdir_suffix: List[str] = None):
     parser.add_argument("--res2", default="outputs/glove-sup-att-1h-1/outputs.json")
     parser.add_argument("--res3", default="outputs/glove-sup-att-1h-2/outputs.json")
     parser.add_argument("--nproc", type=int, default=1)
-    parser.add_argument("--decode_max_time_step", type=int, default=500)
+    parser.add_argument("--decode-max-time-step", type=int, default=500)
     parser.add_argument(
-        "--from_heuristic",
+        "--from-heuristic",
         default=False,
         action="store_true",
-        help="If True, use heuristic to predict the FROM clause",
+        help="If True, use heuristic to predict the FROM clause.",
+    )
+    parser.add_argument(
+        "--force",
+        default=False,
+        action="store_true",
+        help="If True, force re-inferring even if --output file already exists.",
     )
     args = parser.parse_args()
 
@@ -303,14 +325,30 @@ def main(args=None, logdir_suffix: List[str] = None):
     if "model_name" in config:
         args.logdir = os.path.join(args.logdir, config["model_name"])
 
+    # to ensure that the save_path to be consistent with what has been saved during preprocessing step.
+    preproc_data_path = os.path.join(args.logdir, "data")
+    config['model']['preproc']['save_path'] = preproc_data_path
+
     output_path = args.output.replace("__LOGDIR__", args.logdir)
     if os.path.exists(output_path):
         print("Output file {} already exists".format(output_path))
-        sys.exit(1)
+        if not args.force:
+            sys.exit(1)
+        print("Forcing re-inferring...")
 
     inferer = Inferer(config, from_heuristic=args.from_heuristic)
+
+    # load the trained model
+    loading_time = time.perf_counter()
     model = inferer.load_model(args.logdir, args.step)
+    loading_time = time.perf_counter() - loading_time
+    print(f"Loading time for trained model: {loading_time}")
+
+    # infer given test set
+    inferring_time = time.perf_counter()
     inferer.infer(model, output_path, args)
+    inferring_time = time.perf_counter() - inferring_time
+    print(f"Inferring time for trained model: {inferring_time}")
 
 
 if __name__ == "__main__":

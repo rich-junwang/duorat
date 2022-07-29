@@ -76,7 +76,10 @@ class DuoRATModel(torch.nn.Module):
     def __init__(self, preproc: DuoRATPreproc, encoder: dict, decoder: dict) -> None:
         super(DuoRATModel, self).__init__()
 
+        # *** preprocessor
         self.preproc = preproc
+
+        # *** encoder
 
         # First-stage encoder
         self.initial_encoder: InitialEncoder = registry.construct(
@@ -111,6 +114,14 @@ class DuoRATModel(torch.nn.Module):
         )
         assert self.encoder_rat_embed_dim % encoder["rat_num_heads"] == 0
         self.mem_embed_dim = self.encoder_rat_embed_dim
+        self.interaction_size = encoder.get("interaction_size", 0)
+        if self.interaction_size > 2:
+            logger.warning(
+                "interaction size {} exceeds 2 unsupported, revert back to 2".format(self.interaction_size)
+            )
+            self.interaction_size = 2
+
+        # *** decoder
         self.decoder_rat_embed_dim = (
             decoder["action_embed_dim"]
             + decoder["field_embed_dim"]
@@ -255,6 +266,28 @@ class DuoRATModel(torch.nn.Module):
 
         self.mask_sampling_config = BernoulliMaskConfig(p_mask=decoder["p_mask"])
 
+    def count_parameters(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def compute_loss(
+        self, preproc_items: List[RATPreprocItem], debug=False
+    ) -> torch.Tensor:
+        duo_rat_batch = self.items_to_duo_rat_batch(preproc_items)
+        decoder_batch = duo_rat_batch.decoder_batch
+        memory, output = self.forward(batch=duo_rat_batch)
+        assert not torch.isnan(memory).any()
+        assert not torch.isnan(output).any()
+        loss = self._compute_loss(
+            memory=memory,
+            output=output,
+            target_key_padding_mask=decoder_batch.target_key_padding_mask,
+            valid_copy_mask=decoder_batch.valid_copy_mask,
+            copy_target_mask=decoder_batch.copy_target_mask,
+            valid_actions_mask=decoder_batch.valid_actions_mask,
+            target=decoder_batch.target,
+        ).mean()
+        return loss
+
     def items_to_duo_rat_batch(
         self, preproc_items: List[RATPreprocItem]
     ) -> DuoRATBatch:
@@ -386,30 +419,19 @@ class DuoRATModel(torch.nn.Module):
         assert not torch.isnan(losses).any()
         return losses
 
-    def forward(self, preproc_items: List[RATPreprocItem]):
-
-        duo_rat_batch = self.items_to_duo_rat_batch(preproc_items)
-        decoder_batch = duo_rat_batch.decoder_batch
-
-        memory = self._encode(batch=duo_rat_batch.encoder_batch)
-        output = self._decode(memory=memory, batch=duo_rat_batch.decoder_batch)
-
-        assert not torch.isnan(memory).any()
-        assert not torch.isnan(output).any()
-        loss = self._compute_loss(
-            memory=memory,
-            output=output,
-            target_key_padding_mask=decoder_batch.target_key_padding_mask,
-            valid_copy_mask=decoder_batch.valid_copy_mask,
-            copy_target_mask=decoder_batch.copy_target_mask,
-            valid_actions_mask=decoder_batch.valid_actions_mask,
-            target=decoder_batch.target,
-        ).mean()
+    def eval_on_batch(self, batch):
+        mean_loss = self.compute_loss(batch)
+        batch_size = len(batch)
         result = {
-            "loss": loss,
-            "total": len(preproc_items),
+            "loss": mean_loss.item() * batch_size,
+            "total": batch_size,
         }
         return result
+
+    def forward(self, batch: DuoRATBatch) -> Tuple[torch.Tensor, torch.Tensor]:
+        source = self._encode(batch=batch.encoder_batch)
+        target = self._decode(memory=source, batch=batch.decoder_batch)
+        return source, target
 
     def _encode(self, batch: DuoRATEncoderBatch) -> torch.Tensor:
         (batch_size, _max_input_length) = batch.input_a.shape
@@ -577,6 +599,7 @@ class DuoRATModel(torch.nn.Module):
             schema_input_token_ordering=self.schema_input_token_ordering,
             schema_source_token_ordering=self.schema_source_token_ordering,
             device=device,
+            interaction_size=self.interaction_size,
         )
 
     def _get_decoder_item(

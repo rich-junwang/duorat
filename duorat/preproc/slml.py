@@ -52,12 +52,26 @@ class SLMLParser(HTMLParser):
     _initial_seed: int
 
     def __init__(
-        self, sql_schema: SQLSchema, tokenizer: AbstractTokenizer, seed: int = 0,
+        self,
+            sql_schema: SQLSchema,
+            tokenizer: AbstractTokenizer,
+            do_filter_bad_matches: bool = False,
+            seed: int = 0,
     ):
         self._initial_seed = seed
         super(SLMLParser, self).__init__()
         self.sql_schema = sql_schema
         self._tokenizer = tokenizer
+        self.do_filter_bad_matches = do_filter_bad_matches
+
+    @staticmethod
+    def _is_bad_tokens_for_matching(token: str) -> bool:
+        number_pat = '^[0-9]$'
+        if re.search(number_pat, token):
+            return True
+        if token in ['a', 'an', 'the', 'as', 'in', 'is', 'of', 'or', 'at']:
+            return True
+        return False
 
     def reset(self) -> None:
         super(SLMLParser, self).reset()
@@ -253,8 +267,13 @@ class SLMLParser(HTMLParser):
         Handle every piece of input string data that is not tags. We HTML unescape the string, tokenize it, look up
         the opened tags, and emit tokens attached with all the matching data that is in the current context.
         """
+
         match_tags: Tuple[MatchTag, ...] = tuple(self._match_stack)
         for token, raw_token in self._tokenizer.tokenize_with_raw(unescape(data)):
+            if self.do_filter_bad_matches:
+                if SLMLParser._is_bad_tokens_for_matching(token=raw_token):
+                    match_tags = tuple()
+
             self._question_tokens.append(
                 PreprocQuestionToken(
                     key=QuestionTokenId(UUID(int=self._rd.getrandbits(128))),
@@ -396,8 +415,6 @@ class SLMLBuilder(object):
                                 )
                             )
                         elif isinstance(match_tag, ColumnMatchTag):
-                            if not match_tag.table_id:
-                                continue
                             table_name = escape(
                                 self.sql_schema.original_table_names[match_tag.table_id]
                             )
