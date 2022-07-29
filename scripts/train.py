@@ -38,7 +38,7 @@ import numpy as np
 
 # noinspection PyUnresolvedReferences
 from torch.cuda.amp import autocast, GradScaler
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 # noinspection PyUnresolvedReferences
 from duorat import datasets
@@ -63,6 +63,18 @@ from duorat.utils import saver as saver_mod
 from duorat.utils.evaluation import evaluate_default, load_from_lines
 from third_party.spider.evaluation import LEVELS
 from scripts.preprocess import Preprocessor
+import torch.distributed as dist
+
+
+class SimpleDataset(Dataset):
+    def __init__(self, data):
+        self.instances = data
+
+    def __len__(self):
+        return len(self.instances)
+
+    def __getitem__(self, index):
+        return self.instances[index]
 
 
 class Logger:
@@ -90,11 +102,6 @@ class Logger:
 
 class Trainer:
     def __init__(self, logger, config):
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        else:
-            device = torch.device("cpu")
-
         self.logger = logger
         self.config = config
 
@@ -110,6 +117,14 @@ class Trainer:
         other_seed = self.config["train"].get("other_seed", None)
         if other_seed:
             set_random_seed(seed=other_seed)
+
+        self.local_rank = self.config["dist"]["local_rank"]
+        self.dist_backend = self.config["dist"]["dist_backend"]
+        if torch.cuda.is_available():
+            device = torch.device("cuda:{}".format(self.local_rank))
+        else:
+            device = torch.device("cpu")
+        self.device = device
 
         with self.init_random:
             # 0. Construct preprocessors
@@ -127,6 +142,16 @@ class Trainer:
                 "model", self.config["model"], preproc=self.model_preproc,
             )
             self.model.to(device=device)
+
+        # For now we hardcode the setting here. Will pulll these parameters from config file
+        self.distributed_training = False
+        num_gpus = self.config["dist"]["num_gpus"]
+        self.num_gpus = num_gpus
+        self.hosts = self.config["dist"]["hosts"]
+        self.world_size = num_gpus * len(self.hosts)
+        self.distributed_training = self.world_size > 1
+        self.host_rank = self.hosts.index(self.config["dist"]["current_host"])
+        self.rank = self.host_rank * num_gpus + self.local_rank
 
         if self.config["train"].get("deterministic", None):
             set_torch_determinism()
@@ -153,16 +178,17 @@ class Trainer:
 
     def train(self, modeldir):
         # Save the config info
-        with open(
-                os.path.join(
-                    modeldir,
-                    "config-{}.json".format(
-                        datetime.datetime.now().strftime("%Y%m%dT%H%M%S%Z")
+        if self.rank == 0:
+            with open(
+                    os.path.join(
+                        modeldir,
+                        "config-{}.json".format(
+                            datetime.datetime.now().strftime("%Y%m%dT%H%M%S%Z")
+                        ),
                     ),
-                ),
-                "w",
-        ) as f:
-            json.dump(self.config, f, sort_keys=True, indent=4)
+                    "w",
+            ) as f:
+                json.dump(self.config, f, sort_keys=True, indent=4)
 
         # slight difference here vs. unrefactored train: The init_random starts over here. Could be fixed if it was important by saving random state at end of init
         with self.init_random:
@@ -205,10 +231,30 @@ class Trainer:
         saver = saver_mod.Saver(
             self.model, optimizer
         )
-        last_step, best_val_all_exact = saver.restore(model_dir=modeldir,
-                                                      load_best=self.config["train"].get('load_best',
-                                                                                         False))
-        if last_step is 0 and self.config["train"].get("initialize_from", False):
+        # last_step, best_val_all_exact = saver.restore(model_dir=modeldir,
+        #                                               load_best=self.config["train"].get('load_best',
+        #                                                                                  False))
+        last_step, best_val_all_exact = 0, 0
+
+        if self.distributed_training:
+            self.logger.log("dist.init_process_group")
+            if len(self.hosts) > 1:
+                dist.init_process_group(backend=self.dist_backend, world_size=self.world_size, rank=self.rank)  # for sagemaker
+            else:
+                dist_url = "tcp://127.0.0.1:8080"
+                dist.init_process_group(backend=self.dist_backend, init_method=dist_url, world_size=self.world_size,
+                                        rank=self.rank)
+            self.logger.log("Initialized the distributed environment: %s backed on %d nodes." % (
+                self.dist_backend, len(self.hosts)))
+            self.logger.log(
+                "World size: %d, Host rank %d, Rank %d, Local rank %d" % (self.world_size, self.host_rank,
+                                                                          self.rank, self.local_rank))
+
+        if self.distributed_training:
+            self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[self.local_rank],
+                                                                   find_unused_parameters=True)
+
+        if last_step == 0 and self.config["train"].get("initialize_from", False):
             filters = self.config["train"]["initialize_from"].get('model_weight_filters', [])
             if len(filters) > 0:
                 saver.restore_part(other_model_dir=self.config["train"]["initialize_from"].get('pretrained_model_path',
@@ -255,6 +301,7 @@ class Trainer:
             if self.config["train"].get('batch_balancing', None) and len(data_splits) > 1:
                 self.logger.log(f"Apply batch balancing for each batch from multiple datasets...")
                 train_datasets = [self.model_preproc.dataset(split) for split in data_splits]
+
                 dataset_example_count = [len(train_dataset) for train_dataset in train_datasets]
                 dataset_weights = 1. / torch.Tensor(dataset_example_count)
                 train_ds_ids = []
@@ -267,20 +314,28 @@ class Trainer:
                 train_datasets = torch.utils.data.ConcatDataset(
                     datasets=train_datasets)
             else:
-                train_datasets = list(itertools.chain.from_iterable(
-                    self.model_preproc.dataset(split) for split in data_splits)
+                train_data = SimpleDataset(
+                    list(
+                        itertools.chain.from_iterable(
+                            self.model_preproc.dataset(split) for split in data_splits
+                        )
+                    )
                 )
+                if self.distributed_training:
+                    sampler = torch.utils.data.distributed.DistributedSampler(train_data)
+                else:
+                    sampler = None
             self.logger.log(f"There are {len(train_datasets)} training examples.")
 
             train_data_loader = self._yield_batches_from_epochs(
                 DataLoader(
                     train_datasets,
                     batch_size=self.config["train"]["batch_size"],
-                    shuffle=True if sampler is None else False,
+                    shuffle=(sampler is None),
                     drop_last=True,
                     collate_fn=lambda x: x,
                     pin_memory=self.config["train"].get('pin_memory', False),
-                    num_workers=self.config["train"].get('num_workers', 0),
+                    num_workers=self.config["train"].get('num_workers', 8),
                     sampler=sampler,
                 )
             )
@@ -322,14 +377,15 @@ class Trainer:
                 val_all_exact = self._eval_model(modeldir, last_step, val_data_loader, "val")
             return val_all_exact
 
-        val_all_exact = _evaluate_model()
-        saver.save(
-            modeldir,
-            last_step,
-            is_best=val_all_exact > best_val_all_exact,
-            best_validation_metric=max(val_all_exact, best_val_all_exact)
-        )
-        best_val_all_exact = max(val_all_exact, best_val_all_exact)
+        if self.rank == 0:
+            val_all_exact = _evaluate_model()
+            saver.save(
+                modeldir,
+                last_step,
+                is_best=val_all_exact > best_val_all_exact,
+                best_validation_metric=max(val_all_exact, best_val_all_exact)
+            )
+            best_val_all_exact = max(val_all_exact, best_val_all_exact)
 
         # Counter for grad aggregation
         grad_accumulation_counter = 0
@@ -396,23 +452,24 @@ class Trainer:
                         self._log_loss(last_step, cur_loss)
                         self._log_lr(last_step, cur_lrs)
                     # Evaluate model
-                    if last_step % self.config["train"]["eval_every_n"] == 0:
-                        val_all_exact = _evaluate_model()
-                        # Run saver
-                        saver.save(
-                            modeldir,
-                            last_step,
-                            is_best=val_all_exact > best_val_all_exact,
-                            best_validation_metric=max(val_all_exact, best_val_all_exact)
-                        )
-                        if val_all_exact > best_val_all_exact:
-                            self.logger.log(
-                                "Step {}: got better model checkpoint with averaged val_all_exact {}. Saved.".format(
-                                    last_step,
-                                    val_all_exact
-                                )
+                    if self.rank == 0:
+                        if last_step % self.config["train"]["eval_every_n"] == 0:
+                            val_all_exact = _evaluate_model()
+                            # Run saver
+                            saver.save(
+                                modeldir,
+                                last_step,
+                                is_best=val_all_exact > best_val_all_exact,
+                                best_validation_metric=max(val_all_exact, best_val_all_exact)
                             )
-                        best_val_all_exact = max(val_all_exact, best_val_all_exact)
+                            if val_all_exact > best_val_all_exact:
+                                self.logger.log(
+                                    "Step {}: got better model checkpoint with averaged val_all_exact {}. Saved.".format(
+                                        last_step,
+                                        val_all_exact
+                                    )
+                                )
+                            best_val_all_exact = max(val_all_exact, best_val_all_exact)
 
                     # Reset the list of losses
                     losses = []
@@ -426,12 +483,19 @@ class Trainer:
     def _eval_model(self, modeldir, last_step, eval_data_loader, eval_section):
         num_eval_items = self.config["train"]["num_eval_items"]
         stats = collections.defaultdict(float)
+        if isinstance(self.model, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel)):
+            self.model = self.model.module
+        else:
+            self.model = self.model
         self.model.eval()
         with torch.no_grad():
             for eval_batch in eval_data_loader:
                 batch_res = self.model.eval_on_batch(eval_batch)
                 for k, v in batch_res.items():
-                    stats[k] += v
+                    if torch.is_tensor(v):
+                        stats[k] += v.item()
+                    else:
+                        stats[k] += v
                 if num_eval_items and stats["total"] > num_eval_items:
                     break
         self.model.train()
@@ -597,6 +661,8 @@ def main(
         args=None, logdir_suffix: List[str] = None, trainer_class: Type[Trainer] = Trainer
 ):
     parser = argparse.ArgumentParser()
+    parser.add_argument("--local_rank", type=int, default=os.environ.get("LOCAL_RANK", 0),
+                        help="Local rank. Necessary for using the torch.distributed.launch utility.")
     parser.add_argument("--logdir", required=True)
     parser.add_argument("--config", required=True)
     parser.add_argument("--config-args")
@@ -663,17 +729,12 @@ def main(
         logger.log("Skip preprocessing..")
     else:
         logger.log("Run preprocessing...")
-        # if isinstance(config["data"], list):
-        #     dataset = config["data"][0]
-        # else:
-        #     dataset = config["data"]
-        # sections = [key for key, v in dataset.items() if isinstance(v, dict)]
-        # Here, we fixed the section list.
         sections = ['train', 'val', 'test']
         preprocessor = Preprocessor(config)
         preprocessor.preprocess(sections=sections,
                                 keep_vocab=config['model']['preproc'].get('keep_vocab', False))
 
+    config["dist"]["local_rank"] = args.local_rank
     if args.preprocess_only:
         print("Done preprocessing. No further training.")
     else:

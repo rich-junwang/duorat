@@ -269,25 +269,6 @@ class DuoRATModel(torch.nn.Module):
     def count_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
-    def compute_loss(
-        self, preproc_items: List[RATPreprocItem], debug=False
-    ) -> torch.Tensor:
-        duo_rat_batch = self.items_to_duo_rat_batch(preproc_items)
-        decoder_batch = duo_rat_batch.decoder_batch
-        memory, output = self.forward(batch=duo_rat_batch)
-        assert not torch.isnan(memory).any()
-        assert not torch.isnan(output).any()
-        loss = self._compute_loss(
-            memory=memory,
-            output=output,
-            target_key_padding_mask=decoder_batch.target_key_padding_mask,
-            valid_copy_mask=decoder_batch.valid_copy_mask,
-            copy_target_mask=decoder_batch.copy_target_mask,
-            valid_actions_mask=decoder_batch.valid_actions_mask,
-            target=decoder_batch.target,
-        ).mean()
-        return loss
-
     def items_to_duo_rat_batch(
         self, preproc_items: List[RATPreprocItem]
     ) -> DuoRATBatch:
@@ -428,10 +409,30 @@ class DuoRATModel(torch.nn.Module):
         }
         return result
 
-    def forward(self, batch: DuoRATBatch) -> Tuple[torch.Tensor, torch.Tensor]:
-        source = self._encode(batch=batch.encoder_batch)
-        target = self._decode(memory=source, batch=batch.decoder_batch)
-        return source, target
+    def forward(self, preproc_items: List[RATPreprocItem]):
+
+        duo_rat_batch = self.items_to_duo_rat_batch(preproc_items)
+        decoder_batch = duo_rat_batch.decoder_batch
+
+        memory = self._encode(batch=duo_rat_batch.encoder_batch)
+        output = self._decode(memory=memory, batch=duo_rat_batch.decoder_batch)
+
+        assert not torch.isnan(memory).any()
+        assert not torch.isnan(output).any()
+        loss = self._compute_loss(
+            memory=memory,
+            output=output,
+            target_key_padding_mask=decoder_batch.target_key_padding_mask,
+            valid_copy_mask=decoder_batch.valid_copy_mask,
+            copy_target_mask=decoder_batch.copy_target_mask,
+            valid_actions_mask=decoder_batch.valid_actions_mask,
+            target=decoder_batch.target,
+        ).mean()
+        result = {
+            "loss": loss,
+            "total": len(preproc_items),
+        }
+        return result
 
     def _encode(self, batch: DuoRATEncoderBatch) -> torch.Tensor:
         (batch_size, _max_input_length) = batch.input_a.shape
