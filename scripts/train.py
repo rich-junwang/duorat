@@ -297,7 +297,6 @@ class Trainer:
                     datasets = [self.config["data"]]
                 data_splits = [f"{dataset['name']}_train" if 'name' in dataset else "train" for dataset in datasets]
 
-            sampler = None
             if self.config["train"].get('batch_balancing', None) and len(data_splits) > 1:
                 self.logger.log(f"Apply batch balancing for each batch from multiple datasets...")
                 train_datasets = [self.model_preproc.dataset(split) for split in data_splits]
@@ -314,7 +313,7 @@ class Trainer:
                 train_datasets = torch.utils.data.ConcatDataset(
                     datasets=train_datasets)
             else:
-                train_data = SimpleDataset(
+                train_datasets = SimpleDataset(
                     list(
                         itertools.chain.from_iterable(
                             self.model_preproc.dataset(split) for split in data_splits
@@ -322,7 +321,7 @@ class Trainer:
                     )
                 )
                 if self.distributed_training:
-                    sampler = torch.utils.data.distributed.DistributedSampler(train_data)
+                    sampler = torch.utils.data.distributed.DistributedSampler(train_datasets)
                 else:
                     sampler = None
             self.logger.log(f"There are {len(train_datasets)} training examples.")
@@ -402,7 +401,7 @@ class Trainer:
                 # Compute and apply gradient
                 with self.model_random:
                     with autocast(enabled=self.config["train"]["amp_enabled"]):
-                        loss = self.model.compute_loss(batch, debug=self.config["train"].get("debug", False))
+                        loss = self.model(batch)["loss"]
                         if torch.isnan(loss).any():
                             continue
                         loss /= self.config["train"]["n_grad_accumulation_steps"]

@@ -22,4 +22,4 @@ done
 
 echo "Job_0 has been launched."
 log_file=${OUTPUT_DIR}/"Job_0"
-python scripts/train.py --config configs/duorat/duorat-finetune-bert-large.jsonnet --logdir ${OUTPUT_DIR} --local_rank 0  2>&1 | tee -a ${log_file}
+python3 scripts/train.py --config configs/duorat/duorat-finetune-bert-large.jsonnet --logdir ${OUTPUT_DIR} --local_rank 0  2>&1 | tee -a ${log_file}
