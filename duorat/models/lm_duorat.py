@@ -23,32 +23,26 @@ logger = logging.getLogger(__name__)
 
 @registry.register("model", "LMDuoRAT")
 class LMDuoRATModel(DuoRATModel):
-    def compute_loss(
-        self, preproc_items: List[RATPreprocItem], debug=False
-    ) -> torch.Tensor:
+    def forward(self, preproc_items: List[RATPreprocItem]):
 
         items = self.preproc_items_to_duorat_items(preproc_items)
-
         if len(items) == 0:
             return torch.tensor(np.nan)
 
-        decoder_batch = duo_rat_decoder_batch(
-            items=tuple(item.decoder_item for item in items)
-        )
+        encoder_batch = duo_rat_encoder_batch(items=tuple(item.encoder_item for item in items))
+        decoder_batch = duo_rat_decoder_batch(items=tuple(item.decoder_item for item in items))
 
-        memory, output = self.forward(
-            batch=DuoRATBatch(
-                encoder_batch=duo_rat_encoder_batch(
-                    items=tuple(item.encoder_item for item in items)
-                ),
-                decoder_batch=decoder_batch,
-            )
+        duo_rat_batch = DuoRATBatch(
+            encoder_batch=encoder_batch,
+            decoder_batch=decoder_batch,
         )
+        memory = self._encode(batch=duo_rat_batch.encoder_batch)
+        output = self._decode(memory=memory, batch=duo_rat_batch.decoder_batch)
 
         assert not torch.isnan(memory).any()
         assert not torch.isnan(output).any()
 
-        return self._compute_loss(
+        loss = self._compute_loss(
             memory=memory,
             output=output,
             target_key_padding_mask=decoder_batch.target_key_padding_mask,
@@ -57,6 +51,12 @@ class LMDuoRATModel(DuoRATModel):
             valid_actions_mask=decoder_batch.valid_actions_mask,
             target=decoder_batch.target,
         ).mean()
+
+        result = {
+            "loss": loss,
+            "total": len(preproc_items),
+        }
+        return result
 
     @staticmethod
     def _get_targets_as_input(batch: DuoRATDecoderBatch) -> torch.Tensor:
