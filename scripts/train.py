@@ -251,6 +251,7 @@ class Trainer:
                 "World size: %d, Host rank %d, Rank %d, Local rank %d" % (self.world_size, self.host_rank,
                                                                           self.rank, self.local_rank))
 
+        self.logger.log(f"Number of parameters: {self.model.count_parameters()}")
         if self.distributed_training:
             self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[self.local_rank],
                                                                    find_unused_parameters=True)
@@ -279,8 +280,6 @@ class Trainer:
                     raise ValueError(f"train.initialize_from.pretrained_model_path is not valid.")
         else:
             self.logger.log(f"Model restored, the last step is {last_step}, best val_all_exact is {best_val_all_exact}")
-
-        self.logger.log(f"Number of parameters: {self.model.count_parameters()}")
 
         # 3. Get training data somewhere
         with self.data_random:
@@ -377,15 +376,15 @@ class Trainer:
                 val_all_exact = self._eval_model(modeldir, last_step, val_data_loader, "val")
             return val_all_exact
 
-        if self.rank == 0:
-            val_all_exact = _evaluate_model()
-            saver.save(
-                modeldir,
-                last_step,
-                is_best=val_all_exact > best_val_all_exact,
-                best_validation_metric=max(val_all_exact, best_val_all_exact)
-            )
-            best_val_all_exact = max(val_all_exact, best_val_all_exact)
+        # if self.rank == 0:
+        #     val_all_exact = _evaluate_model()
+        #     saver.save(
+        #         modeldir,
+        #         last_step,
+        #         is_best=val_all_exact > best_val_all_exact,
+        #         best_validation_metric=max(val_all_exact, best_val_all_exact)
+        #     )
+        #     best_val_all_exact = max(val_all_exact, best_val_all_exact)
 
         # Counter for grad aggregation
         grad_accumulation_counter = 0
