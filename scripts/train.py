@@ -61,6 +61,7 @@ from duorat.utils import registry, parallelizer
 from duorat.utils import random_state
 from duorat.utils import saver as saver_mod
 from duorat.utils.evaluation import evaluate_default, load_from_lines
+from duorat.utils import logger_utils
 from third_party.spider.evaluation import LEVELS
 from scripts.preprocess import Preprocessor
 import torch.distributed as dist
@@ -714,7 +715,7 @@ def main(
 
     # Initialize the logger
     reopen_to_flush = config.get("log", {}).get("reopen_to_flush")
-    logger = Logger(os.path.join(args.logdir, "log.txt"), reopen_to_flush)
+    logger = Logger(os.path.join(args.logdir, f"log_{args.local_rank}.txt"), reopen_to_flush)
     logger.log("Logging to {}".format(args.logdir))
 
     preproc_data_path = os.path.join(args.logdir, "data")
