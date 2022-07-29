@@ -78,7 +78,7 @@
         "amp_enabled": true,
         "batch_size": 8,
         "n_grad_accumulation_steps": 2,
-        "eval_batch_size": 20,
+        "eval_batch_size": 16,
         "eval_beam_size": 1,
         "eval_decode_max_time_step": 500,
         "eval_every_n": 5000,

@@ -163,16 +163,17 @@ class Trainer:
 
     def train(self, modeldir):
         # Save the config info
-        with open(
-            os.path.join(
-                modeldir,
-                "config-{}.json".format(
-                    datetime.datetime.now().strftime("%Y%m%dT%H%M%S%Z")
+        if self.rank == 0:
+            with open(
+                os.path.join(
+                    modeldir,
+                    "config-{}.json".format(
+                        datetime.datetime.now().strftime("%Y%m%dT%H%M%S%Z")
+                    ),
                 ),
-            ),
-            "w",
-        ) as f:
-            json.dump(self.config, f, sort_keys=True, indent=4)
+                "w",
+            ) as f:
+                json.dump(self.config, f, sort_keys=True, indent=4)
 
         # slight difference here vs. unrefactored train: The init_random starts over here. Could be fixed if it was important by saving random state at end of init
         with self.init_random:
@@ -215,7 +216,8 @@ class Trainer:
         saver = saver_mod.Saver(
             self.model, optimizer
         )
-        last_step, best_val_all_exact = saver.restore(modeldir)
+        # last_step, best_val_all_exact = saver.restore(modeldir)
+        last_step, best_val_all_exact = 0, 0
 
         if self.distributed_training:
             self.logger.log("dist.init_process_group")
@@ -255,9 +257,9 @@ class Trainer:
                     section for section in self.config["data"] if "train" in section
                 ]
             train_data = SimpleDataset(
-                itertools.chain.from_iterable(
+                list(itertools.chain.from_iterable(
                     self.model_preproc.dataset(split) for split in data_splits
-                )
+                ))
             )
 
             if self.distributed_training:
@@ -272,7 +274,7 @@ class Trainer:
                     train_data,
                     batch_size=self.config["train"]["batch_size"],
                     shuffle=(train_sampler is None),
-                    num_workers=4,
+                    num_workers=8,
                     drop_last=True,
                     sampler=train_sampler,
                     collate_fn=lambda x: x,
@@ -287,6 +289,7 @@ class Trainer:
         val_data_loader = DataLoader(
             val_data,
             batch_size=self.config["train"]["eval_batch_size"],
+            num_workers=8,
             collate_fn=lambda x: x,
         )
 
