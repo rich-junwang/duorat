@@ -12,7 +12,7 @@ export CACHE_DIR=./logdir
 export TRANSFORMERS_CACHE=./logdir
 export TOKENIZERS_PARALLELISM=true
 export CORENLP_SERVER_PORT=9000
-export SM_NUM_GPUS=${SM_NUM_GPUS:-1} # default to 1 gpu, set to 8 if has 8 gpus
+export SM_NUM_GPUS=${SM_NUM_GPUS:-8} # default to 1 gpu, set to 8 if has 8 gpus
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 
 OUTPUT_DIR=logdir/duorat-bert

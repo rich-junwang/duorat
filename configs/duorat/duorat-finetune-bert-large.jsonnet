@@ -88,7 +88,8 @@
         "infer_min_n": 5000,
         "max_steps": 100000,
         "num_eval_items": 1034,
-        "report_every_n": 10
+        "report_every_n": 10,
+        "epoch": 10,
     },
     "dist": {
         "hosts": ["host0"],
