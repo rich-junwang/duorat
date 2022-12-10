@@ -14,6 +14,7 @@ export TOKENIZERS_PARALLELISM=true
 export CORENLP_SERVER_PORT=9000
 export SM_NUM_GPUS=${SM_NUM_GPUS:-1} # default to 1 gpu, set to 8 if has 8 gpus
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+export CORENLP_HOME=$HOME/corenlp/stanford-corenlp-full-2018-10-05
 
 OUTPUT_DIR=logdir/duorat-bert
 for ((i = 1 ; i < $SM_NUM_GPUS; i++)); do

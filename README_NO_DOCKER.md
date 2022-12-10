@@ -9,7 +9,10 @@ Note that you can have run it under a running virtual environment (w/ required `
 ```
 pip install pipenv==2020.8.13
 pipenv install --dev --system
+sudo apt install libpython3.7-dev  # For jsonnet
 ```
+
+
 
 Download `NLTK` data:
 ```
@@ -32,6 +35,7 @@ Set up global environment variables:
 ./setup_env.sh printenv
 ```
 
+
 Alternatively, 
 ```
 export CACHE_DIR=./logdir
@@ -44,6 +48,12 @@ export CORENLP_SERVER_PORT=9000
 Finally, install `DuoRAT` package:
 ```
 pip install -e .
+```
+
+```
+# Start virtual env
+cd duorat
+pipenv shell
 ```
 
 # Usage
@@ -81,24 +91,3 @@ python scripts/infer.py --logdir ./logdir/duorat-new-db-content --section val --
 ```
 python scripts/eval.py --config configs/duorat/duorat-new-db-content.jsonnet --section val --inferred ./logdir/duorat-new-db-content/val-duorat-new-db-content.output --output ./logdir/duorat-new-db-content/val-duorat-new-db-content.eval
 ```
-
-## Interactive
-
-```
-python scripts/interactive.py --logdir ./logdir/duorat-new-db-content --config configs/duorat/duorat-new-db-content.jsonnet --db-path <your_path>/cinema.sqlite
-```
-
-### Results
-
-Results on Spider dataset:
-
-| Model   | Dev Accuracy  | 
-|---|---|
-| w/ GLOVE (100K steps)   | 62.6 (easy_exact = 0.8064516129032258, medium_exact = 0.6300448430493274, hard_exact = 0.5459770114942529, extra_exact = 0.42771084337349397)  | 
-| w/ finetuned BERT (base, uncased) (150K steps)  | 64.3 (easy_exact = 0.8064516129032258, medium_exact = 0.6569506726457399, hard_exact = 0.5862068965517241, extra_exact = 0.42168674698795183)  | 
-| w/ finetuned BERT (large, uncased) (150K steps) | 70.7 (easy_exact = 0.8911290322580645, medium_exact = 0.742152466367713, hard_exact = 0.5804597701149425, extra_exact = 0.46987951807228917)  |
-| w/ finetuned BERT (large, uncased) + w/ database content (150K steps) | ~72 (easy_exact = 0.9153225806451613, medium_exact = 0.7533632286995515, hard_exact = 0.632183908045977, extra_exact = 0.42771084337349397) | 
-
-
-# Contact
-Vu Hoang (vu.hoang@oracle.com, duyvuleo@gmail.com)

@@ -483,10 +483,10 @@ class Trainer:
         num_eval_items = self.config["train"]["num_eval_items"]
         stats = collections.defaultdict(float)
         if isinstance(self.model, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel)):
-            self.model = self.model.module
+            model = self.model.module
         else:
-            self.model = self.model
-        self.model.eval()
+            model = self.model
+        model.eval()
         with torch.no_grad():
             for eval_batch in eval_data_loader:
                 batch_res = self.model(eval_batch)
@@ -497,7 +497,7 @@ class Trainer:
                         stats[k] += v
                 if num_eval_items and stats["total"] > num_eval_items:
                     break
-        self.model.train()
+        model.train()
 
         # Divide each stat by 'total'
         for k in stats:
